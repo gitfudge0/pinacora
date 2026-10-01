@@ -1,0 +1,50 @@
+{
+  "name": "zune-inflate",
+  "version": "0.2.54",
+  "repository": "https://github.com/etemesi254/zune-image",
+  "revision": "69502ce83fdfecdd0beefd677e2abb3781b29d98",
+  "revision_source": "crate .cargo_vcs_info.json revision",
+  "files": [
+    {
+      "file": "LICENSE-ZLIB",
+      "url": "https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE-ZLIB",
+      "sha256": "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352"
+    },
+    {
+      "file": "LICENSE.md",
+      "url": "https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE.md",
+      "sha256": "e870d7fd7819a9f0453c62798cb52ae95d148a8c91dc2de1d983f997143c72de"
+    },
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "SPDX-Apache-2.0.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/Apache-2.0.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+      "file": "SPDX-Zlib.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/Zlib.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/zune-inflate/0.2.54",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "f3da162dd3818fcdf23c9ce34930d66064106873a692d6994abd49b80e60ea66"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/zune-inflate/0.2.54",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "a7e3d8fd82218e7f9f2172d41a048e4879abc81228589539e1ec750d72811f90"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

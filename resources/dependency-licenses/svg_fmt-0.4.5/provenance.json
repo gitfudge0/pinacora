@@ -1,0 +1,39 @@
+{
+  "name": "svg_fmt",
+  "version": "0.4.5",
+  "repository": "https://github.com/nical/rust_debug",
+  "revision": "93f414cd572b5c2781df93dbdc068ed13443d05a",
+  "revision_source": "crate .cargo_vcs_info.json revision",
+  "files": [
+    {
+      "file": "LICENSE",
+      "url": "https://raw.githubusercontent.com/nical/rust_debug/93f414cd572b5c2781df93dbdc068ed13443d05a/LICENSE",
+      "sha256": "7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1"
+    },
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "SPDX-Apache-2.0.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/Apache-2.0.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/svg_fmt/0.4.5",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "84650d018d4259c31ab944439b642665668367ed4312a64a735ee2654d1056e5"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/svg_fmt/0.4.5",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "1ec9c98196c4e873d78f2e07c0803679266835efb6ecd223f0bc67a4ae39ed29"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

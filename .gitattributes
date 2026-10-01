@@ -1,0 +1,2 @@
+# Preserve upstream license and manifest bytes for provenance verification.
+resources/dependency-licenses/** -text

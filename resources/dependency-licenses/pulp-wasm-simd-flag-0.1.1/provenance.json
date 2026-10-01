@@ -1,0 +1,33 @@
+{
+  "name": "pulp-wasm-simd-flag",
+  "version": "0.1.1",
+  "repository": "https://github.com/sarah-quinones/pulp/",
+  "revision": "5eb07fd7b68edf0a5e19f71737d315f72a510295",
+  "revision_source": "crate .cargo_vcs_info.json revision",
+  "files": [
+    {
+      "file": "LICENSE",
+      "url": "https://raw.githubusercontent.com/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE",
+      "sha256": "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9"
+    },
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/pulp-wasm-simd-flag/0.1.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "54146b6fcfec790328d3a093fc789a209dde6ef387b711f98a5374a5436b2b9f"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/pulp-wasm-simd-flag/0.1.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "5bb7f9eea7eef386b8ff1516876bc62c8a9f2ab122ac20a4600528042f5463fb"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

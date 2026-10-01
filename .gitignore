@@ -1,0 +1,11 @@
+/target/
+/dist/
+.DS_Store
+*.iconset/
+*.part
+*.zip
+*.dmg
+*.dSYM/
+.env
+.env.*
+!.env.example

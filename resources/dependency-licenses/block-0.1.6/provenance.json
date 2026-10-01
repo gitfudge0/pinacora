@@ -1,0 +1,28 @@
+{
+  "name": "block",
+  "version": "0.1.6",
+  "repository": "http://github.com/SSheldon/rust-block",
+  "revision": null,
+  "revision_source": "crate source metadata; upstream license file unavailable",
+  "files": [
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/block/0.1.6",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "24df2f33b48c9e756a4f864f882c1ab07a159b6c2b790f45af2e8162499b6719"
+    },
+    {
+      "file": "block-0.1.6.crate",
+      "url": "https://static.crates.io/crates/block/block-0.1.6.crate",
+      "kind": "exact registry source archive; preserves all shipped source notices",
+      "sha256": "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

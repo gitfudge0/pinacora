@@ -1,0 +1,44 @@
+{
+  "name": "naga",
+  "version": "25.0.1",
+  "repository": "https://github.com/gfx-rs/wgpu/tree/trunk/naga",
+  "revision": "060a779fc5f56560215ea84bda70278cbbd31e72",
+  "revision_source": "crate .cargo_vcs_info.json revision",
+  "files": [
+    {
+      "file": "LICENSE.APACHE",
+      "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/LICENSE.APACHE",
+      "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+    },
+    {
+      "file": "LICENSE.MIT",
+      "url": "https://raw.githubusercontent.com/gfx-rs/wgpu/060a779fc5f56560215ea84bda70278cbbd31e72/LICENSE.MIT",
+      "sha256": "c7fea58d1cfe49634cd92e54fc10a9d871f4b275321a4cd8c09e449122caaeb4"
+    },
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "SPDX-Apache-2.0.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/Apache-2.0.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/naga/25.0.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "d4b4ced71d5954e272a643fd5a29c1e4ad94c04a77ceadcce8ddd5cae1e1c90e"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/naga/25.0.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "c28f6a48bc9bb9c3f39e4abab6e8394bdb5770c35ae558cb988e84b02c33730e"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

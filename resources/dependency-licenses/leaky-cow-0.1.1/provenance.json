@@ -1,0 +1,34 @@
+{
+  "name": "leaky-cow",
+  "version": "0.1.1",
+  "repository": "https://github.com/notriddle/rust-leaky-cow",
+  "revision": null,
+  "revision_source": "crate source metadata; upstream license file unavailable",
+  "files": [
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "SPDX-Apache-2.0.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/Apache-2.0.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/leaky-cow/0.1.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "cd5e595a4b4eede02b0c1b96bb86eb3860bf660fafd7ca6eb0f92b96d9e733f5"
+    },
+    {
+      "file": "leaky-cow-0.1.1.crate",
+      "url": "https://static.crates.io/crates/leaky-cow/leaky-cow-0.1.1.crate",
+      "kind": "exact registry source archive; preserves all shipped source notices",
+      "sha256": "40a8225d44241fd324a8af2806ba635fc7c8a7e9a7de4d5cf3ef54e71f5926fc"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

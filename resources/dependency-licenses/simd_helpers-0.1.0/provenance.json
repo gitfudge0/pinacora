@@ -1,0 +1,34 @@
+{
+  "name": "simd_helpers",
+  "version": "0.1.0",
+  "repository": "https://github.com/lu-zero/simd_helpers",
+  "revision": "ca1a2f84aa386d758e98f8a609d990263932fb85",
+  "revision_source": "crate source metadata; upstream license file unavailable",
+  "files": [
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/simd_helpers/0.1.0",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "42364d200c5cc7792960bdf10354a108b6c68ca49f2e1567967e2d5b1dba37a6"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/simd_helpers/0.1.0",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "b41497677a5498040f2eb3fc089e3c2c38c413dca64f41dc57a115e26480461d"
+    },
+    {
+      "file": "simd_helpers-0.1.0.crate",
+      "url": "https://static.crates.io/crates/simd_helpers/simd_helpers-0.1.0.crate",
+      "kind": "exact registry source archive; preserves all shipped source notices",
+      "sha256": "95890f873bec569a0362c235787f3aca6e1e887302ba4840839bcc6459c42da6"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

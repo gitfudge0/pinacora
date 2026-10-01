@@ -1,0 +1,33 @@
+{
+  "name": "taffy",
+  "version": "0.9.0",
+  "repository": "https://github.com/DioxusLabs/taffy",
+  "revision": "599b1b7d7410d97e13bafc4c01fbe6d7a9cf060a",
+  "revision_source": "crate .cargo_vcs_info.json revision",
+  "files": [
+    {
+      "file": "LICENSE.md",
+      "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/599b1b7d7410d97e13bafc4c01fbe6d7a9cf060a/LICENSE.md",
+      "sha256": "a7083ef3dd41a65eeb2162c2c091b0082e2724fb4c6ed029b363c7840d244ecd"
+    },
+    {
+      "file": "SPDX-MIT.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/MIT.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/taffy/0.9.0",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "d3eda627a17d29a5014a2af44a59b884054f8c219c3c4b9986ff5a52a86e17b4"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/taffy/0.9.0",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "ff560511c3846158558d4045a02a2b77aa36914820b3d901b0cb3c5f2fd55e98"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}

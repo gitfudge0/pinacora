@@ -1,0 +1,34 @@
+{
+  "name": "hexf-parse",
+  "version": "0.2.1",
+  "repository": "https://github.com/lifthrasiir/hexf",
+  "revision": "4225763d744183d720f575ae96d04161b4d08ea0",
+  "revision_source": "crate source metadata; upstream license file unavailable",
+  "files": [
+    {
+      "file": "SPDX-CC0-1.0.txt",
+      "url": "https://raw.githubusercontent.com/spdx/license-list-data/31ba1a50e5397e00a304dbadc76531740e89ee48/text/CC0-1.0.txt",
+      "kind": "canonical SPDX license text; not a crate-provided license file",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+    },
+    {
+      "file": "crate-Cargo.toml",
+      "url": "https://crates.io/crates/hexf-parse/0.2.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "dd7274968556f3f3309df5615d94437ec4e4823777cc440f91177b2170cbe2a7"
+    },
+    {
+      "file": "crate-Cargo.toml.orig",
+      "url": "https://crates.io/crates/hexf-parse/0.2.1",
+      "kind": "unaltered registry crate manifest, retaining authors and license declaration",
+      "sha256": "4a56dbdbc12054fd33b7a2634a45cbbe6fe12f5e6f4081002cbfa527f7220c70"
+    },
+    {
+      "file": "hexf-parse-0.2.1.crate",
+      "url": "https://static.crates.io/crates/hexf-parse/hexf-parse-0.2.1.crate",
+      "kind": "exact registry source archive; preserves all shipped source notices",
+      "sha256": "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+    }
+  ],
+  "fallback_explanation": "Canonical SPDX texts supplement upstream files and unchanged crate metadata. When no upstream text was found, the exact published crate archive is included. This does not manufacture crate copyright statements or assert an upstream file exists."
+}
