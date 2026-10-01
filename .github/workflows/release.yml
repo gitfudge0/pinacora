@@ -3,12 +3,18 @@ name: Release macOS app
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to rebuild
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  group: release-${{ github.event.release.tag_name || inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -27,11 +33,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal
       - name: Import gitfudge signing identity
+        timeout-minutes: 2
         env:
           SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE_P12 }}
           SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
@@ -45,15 +52,19 @@ jobs:
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
+          echo 'Importing certificate and private key'
           security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          echo 'Configuring codesign private key access'
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security find-certificate -c gitfudge -p "$keychain" > "$RUNNER_TEMP/signing.pem"
-          security add-trusted-cert -r trustRoot -p codeSign -k "$keychain" "$RUNNER_TEMP/signing.pem"
+          echo 'Trusting certificate for code signing on disposable runner'
+          sudo -n security add-trusted-cert -d -r trustRoot -p codeSign -k "$keychain" "$RUNNER_TEMP/signing.pem"
+          echo 'Verifying signing identity availability'
           security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
           security find-identity -v -p codesigning "$keychain"
       - name: Package macOS app
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
           BUILD_TARGET: ${{ matrix.target }}
           MACOS_SIGNING_IDENTITY: 8A432625E90DDBE5053D595CBAD2BA712B976643
         run: ./scripts/package-release.sh "$BUILD_TARGET" "$RELEASE_TAG"
@@ -65,7 +76,17 @@ jobs:
           test "$fingerprint" = 8A432625E90DDBE5053D595CBAD2BA712B976643
       - name: Remove temporary signing keychain
         if: always()
+        timeout-minutes: 2
         run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          cert = pathlib.Path(os.environ["RUNNER_TEMP"]) / "signing.pem"
+          if cert.exists():
+              try:
+                  subprocess.run(["sudo", "-n", "security", "remove-trusted-cert", "-d", str(cert)], timeout=20, check=False)
+              except subprocess.TimeoutExpired:
+                  print("Trust cleanup timed out on disposable runner")
+          PY
           security delete-keychain "$RUNNER_TEMP/reframed-signing.keychain-db" || true
           python3 - <<'PY'
           import os, pathlib
@@ -95,7 +116,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
           cd release-assets
           sha256sum --check *.sha256
