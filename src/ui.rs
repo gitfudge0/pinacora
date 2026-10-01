@@ -46,6 +46,7 @@ pub struct Gallery {
     page: usize,
     loading: bool,
     applying: bool,
+    downloading: bool,
     status: String,
     query: String,
     focus: FocusHandle,
@@ -141,6 +142,7 @@ impl Gallery {
             page: 0,
             loading: false,
             applying: false,
+            downloading: false,
             status: String::new(),
             query: String::new(),
             focus: cx.focus_handle(),
@@ -496,21 +498,56 @@ impl Gallery {
             return;
         };
         self.applying = true;
+        self.downloading = true;
         self.status = "Downloading and validating the full resolution original…".into();
+        let all_desktops = reframed::platform::all_desktops_supported();
         let task = cx.background_executor().spawn(async move {
             reframed::download::fetch(&detail.original, true).map_err(|e| format!("{e:#}"))
         });
         cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |app, cx| {
-                // AppKit is called from GPUI's foreground/main thread, after network work completes.
-                app.status = match result {
-                    Ok((path, w, h)) => match reframed::platform::apply(&path) {
-                        Ok(n) => format!("Wallpaper set on {n} display(s) · {w} × {h}"),
-                        Err(e) => format!("Could not apply wallpaper: {e:#}"),
-                    },
-                    Err(e) => format!("Could not download original: {e}"),
+            let downloaded = task.await;
+            let (path, w, h) = match downloaded {
+                Ok(original) => original,
+                Err(error) => {
+                    let _ = this.update(cx, |app, cx| {
+                        app.status = format!("Could not download original: {error}");
+                        app.applying = false;
+                        app.downloading = false;
+                        app.status_epoch += 1;
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            if this.update(cx, |app, cx| {
+                app.downloading = false;
+                app.status = if all_desktops {
+                    "Applying wallpaper to all Desktops…".into()
+                } else {
+                    "Applying wallpaper to connected displays…".into()
                 };
+                cx.notify();
+            }).is_err() {
+                return;
+            }
+            let status = if all_desktops {
+                let task = cx.background_executor().spawn(async move {
+                    reframed::platform::apply_all_desktops(&path)
+                        .map_err(|error| format!("{error:#}"))
+                });
+                match task.await {
+                    Ok(()) => format!("Wallpaper set on all Desktops · {w} × {h}"),
+                    Err(error) => format!("Could not apply wallpaper: {error}"),
+                }
+            } else {
+                // AppKit requires the foreground/main thread on macOS 12–13.
+                match reframed::platform::apply(&path) {
+                    Ok(n) => format!("Wallpaper set on {n} connected display(s) in the current Desktop · {w} × {h}"),
+                    Err(error) => format!("Could not apply wallpaper: {error:#}"),
+                }
+            };
+            let _ = this.update(cx, |app, cx| {
+                app.status = status;
                 app.applying = false;
                 app.status_epoch += 1;
                 cx.notify();
@@ -1112,8 +1149,10 @@ impl Gallery {
                             .gap_3()
                             .child(self.button(
                                 "apply",
-                                if self.applying {
+                                if self.downloading {
                                     "Downloading…"
+                                } else if self.applying {
+                                    "Applying…"
                                 } else {
                                     "Set wallpaper"
                                 },
@@ -1128,7 +1167,11 @@ impl Gallery {
                     )
                     .child(div().text_xs().text_color(rgb(0xb2bbb2)).child(self.text(
                         "display-scope",
-                        "Untouched original · All connected displays",
+                        if reframed::platform::all_desktops_supported() {
+                            "Untouched original · All Desktops"
+                        } else {
+                            "Untouched original · Connected displays in this Desktop"
+                        },
                     )))
                     .when(!self.status.is_empty(), |d| {
                         d.child(
@@ -1374,7 +1417,11 @@ impl Gallery {
             ),
             2 => (
                 "Make it yours",
-                "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to every currently connected display.",
+                if reframed::platform::all_desktops_supported() {
+                    "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to all Desktops."
+                } else {
+                    "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to connected displays in your current Desktop. All Desktops requires macOS 14 or newer."
+                },
             ),
             _ => (
                 "Keep exploring",

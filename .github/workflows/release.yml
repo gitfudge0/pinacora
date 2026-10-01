@@ -31,11 +31,49 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Import gitfudge signing identity
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE_P12 }}
+          SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keychain="$RUNNER_TEMP/reframed-signing.keychain-db"
+          keychain_password=$(openssl rand -base64 48)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$SIGNING_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security find-certificate -c gitfudge -p "$keychain" > "$RUNNER_TEMP/signing.pem"
+          security add-trusted-cert -r trustRoot -p codeSign -k "$keychain" "$RUNNER_TEMP/signing.pem"
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          security find-identity -v -p codesigning "$keychain"
       - name: Package macOS app
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           BUILD_TARGET: ${{ matrix.target }}
+          MACOS_SIGNING_IDENTITY: 8A432625E90DDBE5053D595CBAD2BA712B976643
         run: ./scripts/package-release.sh "$BUILD_TARGET" "$RELEASE_TAG"
+      - name: Verify gitfudge certificate fingerprint
+        run: |
+          set -euo pipefail
+          codesign --display --extract-certificates="$RUNNER_TEMP/app-signing-" dist/Reframed.app
+          fingerprint=$(openssl x509 -inform DER -in "$RUNNER_TEMP/app-signing-0" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d ':')
+          test "$fingerprint" = 8A432625E90DDBE5053D595CBAD2BA712B976643
+      - name: Remove temporary signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/reframed-signing.keychain-db" || true
+          python3 - <<'PY'
+          import os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          for pattern in ("signing.p12", "signing.pem", "app-signing-*"):
+              for path in root.glob(pattern):
+                  path.unlink(missing_ok=True)
+          PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-${{ matrix.arch }}

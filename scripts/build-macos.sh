@@ -3,12 +3,14 @@ set -eu
 cd "$(dirname "$0")/.."
 [ "$(uname -s)" = Darwin ] || { echo 'This bundle requires macOS.' >&2; exit 1; }
 profile=release
+signing_identity=-
 target=${CARGO_BUILD_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --debug) profile=debug; shift ;;
     --target) [ "$#" -ge 2 ] || { echo '--target requires a triple' >&2; exit 1; }; target=$2; shift 2 ;;
-    *) echo "Usage: $0 [--debug] [--target <triple>]" >&2; exit 1 ;;
+    --signing-identity) [ "$#" -ge 2 ] && [ -n "$2" ] || { echo '--signing-identity requires an identity' >&2; exit 1; }; signing_identity=$2; shift 2 ;;
+    *) echo "Usage: $0 [--debug] [--target <triple>] [--signing-identity <identity>]" >&2; exit 1 ;;
   esac
 done
 case "$target" in
@@ -42,6 +44,6 @@ cp -R dist/license-notices/. "$bundle/Contents/Resources/licenses/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$bundle/Contents/Resources/licenses/"
 plutil -lint "$bundle/Contents/Info.plist"
 lipo "$bundle/Contents/MacOS/Reframed" -verify_arch "$arch"
-codesign --force --sign - "$bundle"
+codesign --force --sign "$signing_identity" "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
 printf 'Built %s\n' "$bundle"

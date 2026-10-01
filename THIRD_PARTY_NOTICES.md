@@ -9,6 +9,8 @@ The following license identifiers were read from the package metadata for the di
 | Crate | Version | Declared license |
 | --- | --- | --- |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
+| plist | 1.10.1 | MIT |
+| tempfile | 3.27.0 | MIT OR Apache-2.0 |
 | gpui | 0.2.2 | Apache-2.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | async-channel | 2.5.0 | Apache-2.0 OR MIT |

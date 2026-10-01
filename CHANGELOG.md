@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — Gallery search and all Desktops
+
+- Set wallpaper applies the original to all Desktops on macOS 14 or newer, with a local wallpaper-store backup and background application. macOS 12–13 retains connected-display application in the current Desktop.
+- Show separate download and application progress, with wallpaper scope and results matching the macOS version.
+- Search the live gallery by title or artist, including matching artworks beyond loaded recent pages, with standard text editing, clipboard, Unicode, and input-method support.
+- Browse a vertical artwork grid, return from a selected preview to the previous results position, and load or retry pages without losing browsing position.
+- Improve keyboard navigation and accessibility for artwork, search, and browsing controls.
+- Add a local installation script that builds and installs the app in Applications.
+- Sign release archives with a self-signed gitfudge certificate.
+
+Known limitations: the gitfudge certificate is not an Apple Developer ID certificate; release archives remain unnotarized and may require Open Anyway. All-Desktops application relies on macOS’s undocumented local wallpaper-store format and retains a backup for each application.
+
 ## 0.1.0 — Initial public release
 
 - Native Rust/GPUI macOS wallpaper browser with a dark hero and scrolling artwork shelves.

@@ -17,9 +17,9 @@ if [ -n "$tag" ] && [ "$tag" != "v$version" ]; then
   echo "Release tag $tag must match v$version" >&2
   exit 1
 fi
-./scripts/build-macos.sh --target "$target"
+./scripts/build-macos.sh --target "$target" --signing-identity "${MACOS_SIGNING_IDENTITY:--}"
 archive="Reframed-$version-macos-$arch.zip"
 mkdir -p dist/releases
 ditto -c -k --sequesterRsrc --keepParent dist/Reframed.app "dist/releases/$archive"
 (cd dist/releases && shasum -a 256 "$archive" > "$archive.sha256")
-printf 'Packaged dist/releases/%s (ad-hoc signed, not notarized)\n' "$archive"
+printf 'Packaged dist/releases/%s (signing identity: %s; not notarized)\n' "$archive" "${MACOS_SIGNING_IDENTITY:--}"
