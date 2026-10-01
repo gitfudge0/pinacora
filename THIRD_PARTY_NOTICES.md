@@ -10,6 +10,9 @@ The following license identifiers were read from the package metadata for the di
 | --- | --- | --- |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | gpui | 0.2.2 | Apache-2.0 |
+| unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
+| async-channel | 2.5.0 | Apache-2.0 OR MIT |
+| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 |
 | ureq | 2.12.1 | MIT OR Apache-2.0 |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.151 | MIT OR Apache-2.0 |

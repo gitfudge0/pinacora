@@ -6,7 +6,7 @@ Reframed has no account system, analytics SDK, advertising, telemetry, or automa
 
 The app requests public gallery catalogue and artwork pages from `www.reframed.gallery`, and preview/original images from `cdn.reframed.gallery`, over HTTPS. Requests include a User-Agent and gallery Referer. Those services receive ordinary connection information, including your IP address, and the URLs you request. Their operators control their own logging and privacy practices. The app does not operate a server or send data to a project-maintainer service.
 
-Search filters artwork already loaded in memory; the query is not sent as a remote search. Refresh and Load more contact the gallery. Selecting artwork can fetch metadata and previews; Set wallpaper downloads its original if it is not already valid in the local cache. View source and the gallery link open your browser, which has its own history and privacy settings. The `--check-source` developer diagnostic also contacts the gallery and downloads one original.
+Search sends trimmed queries of at least two characters to Reframed’s gallery search endpoint after a short pause in typing. Refresh and Load more contact the gallery. Selecting artwork can fetch metadata and previews; Set wallpaper downloads its original if it is not already valid in the local cache. View source and the gallery link open your browser, which has its own history and privacy settings. The `--check-source` developer diagnostic also contacts the gallery and downloads one original.
 
 ## Local data
 

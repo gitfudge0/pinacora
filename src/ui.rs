@@ -1,15 +1,21 @@
+use crate::accessibility::{
+    AccessibilityAction, AccessibilityBridge, AccessibilityNode, AccessibilityRole,
+};
 use crate::onboarding::{self, Outcome};
+use crate::search_input::{Changed, Navigate, TextInput};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, FocusHandle, FontWeight, KeyDownEvent, ObjectFit,
-    ScrollHandle, SharedString, Window, WindowControlArea, div, img, linear_color_stop,
-    linear_gradient, point, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, AnyElement, Context, Entity, FocusHandle, Focusable, FontWeight,
+    KeyDownEvent, ObjectFit, ScrollHandle, SharedString, Window, WindowControlArea, div, img,
+    linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
 };
 use reframed::catalogue::{Artwork, Detail};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
-    time::{Duration, Instant},
+    time::Duration,
 };
 fn app_icon(edge: f32) -> gpui::Img {
     static ICON: OnceLock<Arc<gpui::Image>> = OnceLock::new();
@@ -26,23 +32,14 @@ fn app_icon(edge: f32) -> gpui::Img {
     .object_fit(ObjectFit::Contain)
 }
 
-struct Tween {
-    from: f32,
-    to: f32,
-    start: Instant,
-    duration: Duration,
-}
-impl Tween {
-    fn value(&self) -> f32 {
-        let t = (self.start.elapsed().as_secs_f32() / self.duration.as_secs_f32()).min(1.);
-        self.from + (self.to - self.from) * (1. - (1. - t).powi(3))
-    }
-    fn active(&self) -> bool {
-        self.start.elapsed() < self.duration && self.from != self.to
-    }
-}
 pub struct Gallery {
+    ax: Rc<RefCell<Option<AccessibilityBridge>>>,
+    ax_nodes: Rc<RefCell<Vec<AccessibilityNode>>>,
+    ax_receiver: Option<async_channel::Receiver<AccessibilityAction>>,
+    ax_sender: async_channel::Sender<AccessibilityAction>,
     artworks: Vec<Artwork>,
+    search: SiteSearch,
+    search_known: Vec<Artwork>,
     previews: HashMap<String, Result<PathBuf, String>>,
     selected: Option<String>,
     detail: Option<Detail>,
@@ -55,17 +52,31 @@ pub struct Gallery {
     preview_queue: VecDeque<Artwork>,
     preview_pending: HashSet<String>,
     preview_active: usize,
-    search_all: bool,
+    search_input: Entity<TextInput>,
+    catalogue_error: Option<String>,
+    detail_error: Option<String>,
+    detail_loading: bool,
+    catalogue_notice: String,
+    new_ids: Vec<String>,
+    last_load_refresh: bool,
+    controls: HashMap<String, FocusHandle>,
+    tiles: HashMap<String, FocusHandle>,
+    columns: usize,
+    keyboard_tile: Option<String>,
+    selected_result_preview: bool,
+    results_offset: gpui::Point<gpui::Pixels>,
+    has_results_return: bool,
+    focus_results_after_layout: bool,
+    navigation_subscribed: bool,
+    rows_start: usize,
+    metadata_scroll: ScrollHandle,
     end: bool,
     selection_epoch: u64,
-    recent_scroll: ScrollHandle,
-    explore_scroll: ScrollHandle,
+    grid_scroll: ScrollHandle,
     hero_previews: HashMap<String, PathBuf>,
     hero_active: bool,
     motion_enabled: bool,
-    interactions: HashMap<String, Tween>,
-    shelf_motion: HashMap<&'static str, (ScrollHandle, Tween)>,
-    selection_start: Instant,
+
     status_epoch: u64,
     hero_queued: Option<(Artwork, u64)>,
     intro_visible: bool,
@@ -80,8 +91,50 @@ impl Gallery {
         let intro_visible = !onboarding::default_path()
             .and_then(|path| onboarding::dismissed(&path))
             .unwrap_or(false);
+        let (ax_sender, ax_receiver) = async_channel::bounded(64);
+        let search_input = cx.new(TextInput::new);
+        cx.subscribe(&search_input, |app, _, event: &Changed, cx| {
+            app.query = event.0.clone();
+            app.schedule_search(true, cx);
+            app.selected_result_preview = false;
+            app.has_results_return = false;
+            app.focus_results_after_layout = app.query.trim().is_empty();
+            app.grid_scroll.set_offset(point(px(0.), px(0.)));
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&search_input, |_, _, cx| cx.notify()).detach();
+        let controls = [
+            "back-to-results",
+            "motion-toggle",
+            "show-walkthrough",
+            "refresh",
+            "clear-search",
+            "empty-clear-search",
+            "retry-catalogue",
+            "load-more",
+            "show-new",
+            "apply",
+            "view-source",
+            "retry-details",
+            "retry-preview",
+            "gallery-source",
+            "intro-motion",
+            "intro-skip",
+            "intro-back",
+            "intro-next",
+        ]
+        .into_iter()
+        .map(|id| (id.to_owned(), cx.focus_handle().tab_stop(true)))
+        .collect();
         let mut app = Self {
+            ax: Rc::new(RefCell::new(None)),
+            ax_nodes: Rc::new(RefCell::new(vec![])),
+            ax_receiver: Some(ax_receiver),
+            ax_sender,
             artworks: vec![],
+            search: SiteSearch::default(),
+            search_known: vec![],
             previews: HashMap::new(),
             selected: None,
             detail: None,
@@ -94,17 +147,31 @@ impl Gallery {
             preview_queue: VecDeque::new(),
             preview_pending: HashSet::new(),
             preview_active: 0,
-            search_all: false,
+            search_input,
+            catalogue_error: None,
+            detail_error: None,
+            detail_loading: false,
+            catalogue_notice: String::new(),
+            new_ids: vec![],
+            last_load_refresh: true,
+            controls,
+            tiles: HashMap::new(),
+            columns: 2,
+            keyboard_tile: None,
+            selected_result_preview: false,
+            results_offset: point(px(0.), px(0.)),
+            has_results_return: false,
+            focus_results_after_layout: false,
+            navigation_subscribed: false,
+            rows_start: 3,
+            metadata_scroll: ScrollHandle::new(),
             end: false,
             selection_epoch: 0,
-            recent_scroll: ScrollHandle::new(),
-            explore_scroll: ScrollHandle::new(),
+            grid_scroll: ScrollHandle::new(),
             hero_previews: HashMap::new(),
             hero_active: false,
             motion_enabled: true,
-            interactions: HashMap::new(),
-            shelf_motion: HashMap::new(),
-            selection_start: Instant::now(),
+
             status_epoch: 0,
             hero_queued: None,
             intro_visible,
@@ -152,70 +219,105 @@ impl Gallery {
             cx.notify();
         }
     }
-    fn intro_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn intro_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         match event.keystroke.key.as_str() {
+            "tab" => self.focus_step(event.keystroke.modifiers.shift, window, cx),
             "escape" => self.close_intro(Outcome::Skipped, cx),
             "enter" | "right" => self.intro_next(cx),
             "left" => self.intro_back(cx),
             _ => {}
         }
     }
-    fn set_motion(
-        &mut self,
-        key: impl Into<String>,
-        target: f32,
-        duration: u64,
-        cx: &mut Context<Self>,
-    ) {
-        let key = key.into();
-        if self.interactions.get(&key).is_some_and(|t| t.to == target) {
-            return;
-        }
-        let from = if self.motion_enabled {
-            self.interactions.get(&key).map_or(0., Tween::value)
-        } else {
-            target
-        };
-        self.interactions.insert(
-            key,
-            Tween {
-                from,
-                to: target,
-                start: Instant::now(),
-                duration: Duration::from_millis(duration),
-            },
-        );
-        cx.notify();
-    }
-    fn motion(&self, key: &str) -> f32 {
-        self.interactions
-            .get(key)
-            .map_or(0., |t| if self.motion_enabled { t.value() } else { t.to })
-    }
-    fn selection_progress(&self) -> f32 {
-        if !self.motion_enabled {
-            return 1.;
-        }
-        let t = (self.selection_start.elapsed().as_secs_f32() / 0.35).min(1.);
-        1. - (1. - t).powi(3)
-    }
     fn toggle_motion(&mut self, cx: &mut Context<Self>) {
         self.motion_enabled = !self.motion_enabled;
-        if !self.motion_enabled {
-            for (_, (handle, tween)) in self.shelf_motion.drain() {
-                handle.set_offset(point(px(tween.to), px(0.)));
-            }
-        }
         cx.notify();
     }
+    fn schedule_search(&mut self, debounce: bool, cx: &mut Context<Self>) {
+        let epoch = self.search.begin(&self.query);
+        if !self.search.loading {
+            cx.notify();
+            return;
+        }
+        let timer = cx.background_executor().timer(if debounce {
+            Duration::from_millis(250)
+        } else {
+            Duration::ZERO
+        });
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let query = this
+                .update(cx, |app, _| {
+                    app.search.current(epoch).then(|| app.search.query.clone())
+                })
+                .ok()
+                .flatten();
+            let Some(query) = query else {
+                return;
+            };
+            let task = cx.background_executor().spawn(async move {
+                reframed::catalogue::fetch_search(&query)
+                    .map_err(|e| format!("Could not search Reframed: {e:#}"))
+            });
+            let result = task.await;
+            let _ = this.update(cx, |app, cx| {
+                if !app.search.complete(epoch, result) {
+                    return;
+                }
+                append_unique(&mut app.search_known, app.search.results.clone());
+                for art in &app.search.results {
+                    app.tiles
+                        .entry(art.id.clone())
+                        .or_insert_with(|| cx.focus_handle());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn searching(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+    fn all_artworks(&self) -> impl Iterator<Item = &Artwork> {
+        self.artworks.iter().chain(self.search_known.iter())
+    }
+    fn visible_loading(&self) -> bool {
+        if self.searching() {
+            self.search.loading
+        } else {
+            self.loading
+        }
+    }
+    fn visible_error(&self) -> Option<String> {
+        if self.searching() {
+            self.search.error.clone()
+        } else {
+            self.catalogue_error.clone()
+        }
+    }
+    fn visible_notice(&self) -> String {
+        if self.searching() {
+            if self.search.query.chars().count() < 2 {
+                "Enter at least 2 characters to search.".into()
+            } else if self.search.loading || self.search.error.is_some() {
+                String::new()
+            } else {
+                "Showing the site’s top matching artworks.".into()
+            }
+        } else {
+            self.catalogue_notice.clone()
+        }
+    }
     fn load(&mut self, refresh: bool, cx: &mut Context<Self>) {
-        if self.loading || self.applying || (!refresh && self.end) {
+        if self.loading || (refresh && self.applying) || (!refresh && self.end) {
             return;
         }
         self.loading = true;
-        self.status = "Loading the gallery…".into();
-        let page = if refresh { 1 } else { self.page + 1 };
+        self.last_load_refresh = refresh;
+        self.catalogue_error = None;
+        let page = request_page(self.page, refresh);
+        let search_epoch = self.search.epoch;
         let task = cx.background_executor().spawn(async move {
             reframed::catalogue::fetch_page(page).map_err(|e| format!("{e:#}"))
         });
@@ -225,36 +327,50 @@ impl Gallery {
                 app.loading = false;
                 match result {
                     Ok(items) => {
+                        let confirmed_end = items.is_empty();
+                        let old_selected = app.selected.clone();
                         if refresh {
-                            app.end = false;
                             app.artworks.clear();
-                            app.selection_epoch += 1;
-                            app.selected = None;
-                            app.detail = None;
-                        }
-                        app.page = page;
-                        let mut added = vec![];
-                        for item in items {
-                            if !app.artworks.iter().any(|a| a.id == item.id) {
-                                added.push(item.clone());
-                                app.artworks.push(item);
+                            if app.search.browse_can_update_view(search_epoch) {
+                                app.grid_scroll.set_offset(point(px(0.), px(0.)));
                             }
                         }
-                        app.end = added.is_empty();
-                        app.status =
-                            format!("{} artworks · Originals from Reframed", app.artworks.len());
+                        let added = append_unique(&mut app.artworks, items);
+                        app.page = page;
+                        app.end = confirmed_end;
+                        app.new_ids = if refresh {
+                            vec![]
+                        } else {
+                            added.iter().map(|a| a.id.clone()).collect()
+                        };
+                        app.catalogue_notice = if refresh {
+                            String::new()
+                        } else if confirmed_end {
+                            "You’ve reached the end of the catalogue".into()
+                        } else if added.is_empty() {
+                            "This page contained artwork already loaded. You can keep loading."
+                                .into()
+                        } else {
+                            format!("{} more artworks loaded", added.len())
+                        };
                         for art in added {
-                            app.preview(art, cx);
+                            app.tiles
+                                .entry(art.id.clone())
+                                .or_insert_with(|| cx.focus_handle());
                         }
-                        if app.selected.is_none()
-                            && let Some(first) = app.artworks.first().cloned()
-                        {
-                            app.select(first, cx);
+                        let retained = selection_retained(&app.artworks, old_selected.as_deref());
+                        if !retained && app.search.browse_can_update_view(search_epoch) {
+                            app.selected = None;
+                            app.detail = None;
+                            app.detail_error = None;
+                            app.status.clear();
+                            app.selection_epoch += 1;
+                            if let Some(first) = app.artworks.first().cloned() {
+                                app.select(first, cx);
+                            }
                         }
                     }
-                    Err(e) => {
-                        app.status = format!("Could not load gallery: {e}. Use Refresh to retry.")
-                    }
+                    Err(e) => app.catalogue_error = Some(format!("Could not load artwork: {e}")),
                 }
                 cx.notify();
             });
@@ -333,7 +449,7 @@ impl Gallery {
             return;
         }
         self.selection_epoch += 1;
-        self.selection_start = Instant::now();
+
         let epoch = self.selection_epoch;
         self.selected = Some(art.id.clone());
         self.hero_queued = None;
@@ -342,7 +458,10 @@ impl Gallery {
             self.pump_hero(cx);
         }
         self.detail = None;
-        self.status = "Loading artwork details…".into();
+        self.detail_loading = true;
+        self.detail_error = None;
+        self.status.clear();
+        self.preview(art.clone(), cx);
         let id = art.id.clone();
         let task = cx.background_executor().spawn(async move {
             reframed::catalogue::fetch_detail(&art).map_err(|e| format!("{e:#}"))
@@ -353,12 +472,12 @@ impl Gallery {
                 if app.selected.as_ref() != Some(&id) || app.selection_epoch != epoch {
                     return;
                 }
+                app.detail_loading = false;
                 match result {
                     Ok(detail) => {
                         app.detail = Some(detail);
-                        app.status = "Ready to download the untouched original".into();
                     }
-                    Err(e) => app.status = e,
+                    Err(e) => app.detail_error = Some(e),
                 }
                 cx.notify();
             });
@@ -367,7 +486,10 @@ impl Gallery {
         cx.notify();
     }
     fn apply(&mut self, cx: &mut Context<Self>) {
-        if self.applying || self.loading || self.intro_visible {
+        if self.applying
+            || self.intro_visible
+            || (!self.searching() && self.loading && self.last_load_refresh)
+        {
             return;
         }
         let Some(detail) = self.detail.clone() else {
@@ -397,51 +519,334 @@ impl Gallery {
         .detach();
         cx.notify();
     }
-    fn key(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.intro_visible || self.applying || e.keystroke.modifiers.control {
-            return;
+    fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigation_key(e, window, cx);
+    }
+    fn navigation_key(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.intro_visible {
+            return false;
         }
-        self.shelf_motion.clear();
-        self.recent_scroll.set_offset(point(px(0.), px(0.)));
-        self.explore_scroll.set_offset(point(px(0.), px(0.)));
-        if e.keystroke.modifiers.platform {
-            match e.keystroke.key.as_str() {
-                "a" => self.search_all = true,
-                "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                        if self.search_all {
-                            self.query.clear();
-                            self.search_all = false;
-                        }
-                        self.query.push_str(&text.replace(['\n', '\r'], " "));
-                    }
-                }
-                _ => return,
-            }
+        if e.keystroke.modifiers.platform && e.keystroke.key == "f" {
+            cx.stop_propagation();
+            self.focus_results_after_layout = true;
+            self.search_input.focus_handle(cx).focus(window);
             cx.notify();
-            return;
+            return true;
         }
-        match e.keystroke.key.as_str() {
-            "backspace" => {
-                if self.search_all {
-                    self.query.clear();
-                    self.search_all = false;
-                } else {
-                    self.query.pop();
-                }
-            }
-            "escape" => self.query.clear(),
-            _ => {
-                if let Some(text) = &e.keystroke.key_char {
-                    if self.search_all {
-                        self.query.clear();
-                        self.search_all = false;
-                    }
-                    self.query.push_str(text);
-                }
-            }
+        if e.keystroke.key == "tab" {
+            cx.stop_propagation();
+            self.focus_step(e.keystroke.modifiers.shift, window, cx);
+            cx.notify();
+            return true;
+        }
+        if e.keystroke.key == "escape"
+            && self.has_results_return
+            && !self.search_input.focus_handle(cx).is_focused(window)
+        {
+            cx.stop_propagation();
+            self.back_to_results(window, cx);
+            return true;
+        }
+        false
+    }
+    fn focus_step(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if reverse {
+            window.focus_prev();
+        } else {
+            window.focus_next();
+        }
+        if let Some(index) = self
+            .filtered()
+            .iter()
+            .position(|art| self.tiles[&art.id].is_focused(window))
+        {
+            self.reveal_row(index / self.columns + self.rows_start, false);
+        }
+        if self.controls["load-more"].is_focused(window) {
+            let filtered = self.filtered();
+            self.reveal_row(
+                self.rows_start
+                    + filtered.len().div_ceil(self.columns)
+                    + usize::from(filtered.is_empty()),
+                false,
+            );
         }
         cx.notify();
+    }
+    fn open_result(&mut self, art: Artwork, window: &mut Window, cx: &mut Context<Self>) {
+        if self.applying {
+            return;
+        }
+        self.results_offset = self.grid_scroll.offset();
+        self.has_results_return = true;
+        self.selected_result_preview = true;
+        self.grid_scroll.set_offset(point(px(0.), px(0.)));
+        self.select(art, cx);
+        let epoch = self.selection_epoch;
+        let this = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            let _ = this.update(cx, |app, cx| {
+                if app.selection_epoch == epoch && app.selected_result_preview {
+                    app.controls["back-to-results"].focus(window);
+                    cx.notify();
+                }
+            });
+        });
+    }
+    fn back_to_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_result_preview = false;
+        self.grid_scroll.set_offset(self.results_offset);
+        if let Some(id) = self
+            .selected
+            .clone()
+            .filter(|id| self.filtered().iter().any(|a| &a.id == id))
+        {
+            self.keyboard_tile = Some(id.clone());
+            if let Some(handle) = self.tiles.get(&id) {
+                handle.focus(window);
+            }
+        } else {
+            self.search_input.focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+    fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.search_input.update(cx, |input, cx| input.clear(cx));
+    }
+    #[allow(clippy::too_many_arguments)] // Mirrors the semantic snapshot fields.
+    fn semantic(
+        &self,
+        id: String,
+        label: String,
+        role: AccessibilityRole,
+        value: String,
+        enabled: bool,
+        selected: bool,
+        focused: bool,
+    ) -> impl IntoElement {
+        let nodes = self.ax_nodes.clone();
+        gpui::canvas(
+            move |bounds, _, _| {
+                nodes.borrow_mut().push(AccessibilityNode {
+                    id,
+                    label,
+                    role,
+                    value,
+                    enabled,
+                    selected,
+                    focused,
+                    bounds,
+                    selected_range: None,
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+    }
+    fn text(&self, id: &str, value: impl Into<String>) -> AnyElement {
+        let value = value.into();
+        div()
+            .relative()
+            .w_full()
+            .min_h(px(20.))
+            .text_sm()
+            .child(value.clone())
+            .child(self.semantic(
+                id.into(),
+                value,
+                AccessibilityRole::StaticText,
+                String::new(),
+                true,
+                false,
+                false,
+            ))
+            .into_any_element()
+    }
+    fn button(
+        &self,
+        id: &'static str,
+        label: impl Into<SharedString>,
+        enabled: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let label: SharedString = label.into();
+        let ax_label = label.to_string();
+        div()
+            .relative()
+            .id(id)
+            .track_focus(
+                &self.controls[id]
+                    .clone()
+                    .tab_stop(enabled && !self.intro_visible)
+                    .tab_index(control_tab_index(id)),
+            )
+            .tab_index(0)
+            .tab_stop(enabled)
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(rgb(SURFACE))
+            .when(matches!(id, "motion-toggle" | "show-walkthrough"), |d| {
+                d.bg(rgba(0xffffff00)).text_xs().text_color(rgb(0xb4bcb5))
+            })
+            .when(id == "apply", |d| {
+                d.px_5()
+                    .py_3()
+                    .bg(rgb(TEXT))
+                    .text_color(rgb(CANVAS))
+                    .font_weight(FontWeight::MEDIUM)
+            })
+            .text_sm()
+            .when(enabled, |d| d.cursor_pointer())
+            .opacity(if enabled { 1. } else { 0.4 })
+            .focus(|s| s.border_1().border_color(rgb(TEXT)))
+            .child(label)
+            .child(self.semantic(
+                id.into(),
+                ax_label,
+                AccessibilityRole::Button,
+                String::new(),
+                enabled,
+                false,
+                false,
+            ))
+            .on_click(cx.listener(move |app, _, window, cx| {
+                if enabled {
+                    app.controls[id].focus(window);
+                    app.activate(id, window, cx);
+                }
+            }))
+            .on_key_down(cx.listener(move |app, e: &KeyDownEvent, window, cx| {
+                if app.controls[id].is_focused(window) && app.navigation_key(e, window, cx) {
+                    return;
+                }
+                if enabled
+                    && app.controls[id].is_focused(window)
+                    && matches!(e.keystroke.key.as_str(), "enter" | "space")
+                {
+                    cx.stop_propagation();
+                    app.activate(id, window, cx);
+                }
+            }))
+            .into_any_element()
+    }
+    fn activate(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match id {
+            "back-to-results" => self.back_to_results(window, cx),
+            "intro-motion" => self.toggle_motion(cx),
+            "intro-skip" => self.close_intro(Outcome::Skipped, cx),
+            "intro-back" => self.intro_back(cx),
+            "intro-next" => self.intro_next(cx),
+            "motion-toggle" => self.toggle_motion(cx),
+            "show-walkthrough" => self.show_intro(window, cx),
+            "refresh" => {
+                if self.searching() {
+                    self.schedule_search(false, cx);
+                } else {
+                    self.load(true, cx);
+                }
+            }
+            "clear-search" | "empty-clear-search" => {
+                self.clear_search(cx);
+                self.search_input.focus_handle(cx).focus(window);
+            }
+            "retry-catalogue" if self.searching() => self.schedule_search(false, cx),
+            "load-more" | "retry-catalogue" => self.load(
+                if self.catalogue_error.is_some() {
+                    self.last_load_refresh
+                } else {
+                    self.artworks.is_empty()
+                },
+                cx,
+            ),
+            "show-new" => {
+                let filtered = self.filtered();
+                if let Some(index) = filtered.iter().position(|a| self.new_ids.contains(&a.id)) {
+                    self.reveal_row(index / self.columns + self.rows_start, true);
+                }
+            }
+            "apply" => self.apply(cx),
+            "view-source" => {
+                if let Some(art) = self
+                    .all_artworks()
+                    .find(|a| Some(&a.id) == self.selected.as_ref())
+                    && let Ok(url) = art.page_url()
+                {
+                    cx.open_url(&url);
+                }
+            }
+            "retry-details" | "retry-preview" => {
+                let art = self
+                    .all_artworks()
+                    .find(|a| Some(&a.id) == self.selected.as_ref())
+                    .cloned();
+                if let Some(art) = art {
+                    if id == "retry-preview" {
+                        self.previews.remove(&art.id);
+                        self.hero_previews.remove(&art.id);
+                    }
+                    self.select(art, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn navigation_bottom(&self) -> f32 {
+        if self.visible_loading()
+            || !self.visible_notice().is_empty()
+            || self.visible_error().is_some()
+        {
+            160.
+        } else {
+            72.
+        }
+    }
+    fn reveal_row(&self, index: usize, align_top: bool) {
+        if let Some(mut bounds) = self.grid_scroll.bounds_for_item(index) {
+            let mut offset = self.grid_scroll.offset();
+            bounds.origin += offset;
+            let top = px(self.navigation_bottom());
+            let bottom = self.grid_scroll.bounds().bottom();
+            if align_top || bounds.top() < top {
+                offset.y += top - bounds.top();
+            } else if bounds.bottom() > bottom {
+                offset.y -= bounds.bottom() - bottom;
+            }
+            offset.y = offset
+                .y
+                .clamp(-self.grid_scroll.max_offset().height, px(0.));
+            self.grid_scroll.set_offset(offset);
+        }
+    }
+    fn prioritize_previews(&mut self, cx: &mut Context<Self>) {
+        let viewport = self.grid_scroll.bounds();
+        let offset = self.grid_scroll.offset();
+        let filtered = self.filtered();
+        let mut visible = vec![];
+        for (row, items) in filtered.chunks(self.columns).enumerate() {
+            if let Some(mut bounds) = self.grid_scroll.bounds_for_item(row + self.rows_start) {
+                bounds.origin += offset;
+                if bounds.intersects(&viewport) {
+                    visible.extend(items.iter().cloned());
+                }
+            }
+        }
+        for art in visible {
+            self.preview(art, cx);
+        }
+    }
+    fn filtered(&self) -> Vec<Artwork> {
+        if self.searching() {
+            self.search.results.clone()
+        } else {
+            self.artworks.clone()
+        }
     }
 }
 
@@ -450,110 +855,22 @@ const SURFACE: u32 = 0x171819;
 const TEXT: u32 = 0xf4f4f0;
 const MUTED: u32 = 0x858986;
 
-fn fade<E: IntoElement + Styled + 'static>(
-    element: E,
-    key: SharedString,
-    millis: u64,
-    enabled: bool,
-) -> AnyElement {
-    if enabled {
-        element
-            .with_animation(
-                key,
-                Animation::new(Duration::from_millis(millis))
-                    .with_easing(|t| 1. - (1. - t).powi(3)),
-                |e, t| e.opacity(t),
-            )
-            .into_any_element()
-    } else {
-        element.into_any_element()
-    }
-}
-fn blend(a: u32, b: u32, t: f32) -> gpui::Rgba {
-    let channel = |shift| {
-        let from = ((a >> shift) & 255u32) as f32;
-        let to = ((b >> shift) & 255u32) as f32;
-        (from + (to - from) * t).round() as u32
-    };
-    rgb((channel(16) << 16) | (channel(8) << 8) | channel(0))
-}
 impl Gallery {
-    fn search(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
-        let _ = window;
+    fn header(&self, cx: &Context<Self>) -> AnyElement {
         div()
-            .id("search")
-            .w(px(218.))
-            .h(px(34.))
-            .flex()
-            .items_center()
-            .px_3()
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key))
-            .on_click(cx.listener(|app, _, window, cx| {
-                app.focus.focus(window);
-                cx.notify();
-            }))
-            .rounded_md()
-            .border_1()
-            .border_color(blend(
-                0x393d3a,
-                0x858986,
-                self.motion("search-focus").max(self.motion("search-hover")),
-            ))
-            .on_hover(cx.listener(|app, hover, _, cx| {
-                app.set_motion("search-hover", if *hover { 0.55 } else { 0. }, 180, cx)
-            }))
-            .bg(rgba(0x171819cc))
-            .text_sm()
-            .text_color(rgb(if self.query.is_empty() {
-                0xb0b6b0
-            } else {
-                TEXT
-            }))
-            .child(div().min_w_0().truncate().child(if self.query.is_empty() {
-                "Search artwork or artist".to_owned()
-            } else {
-                self.query.clone()
-            }))
-            .into_any_element()
-    }
-    fn header(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(64.))
+            .h(px(72.))
+            .flex_none()
             .pl(px(100.))
-            .pr_8()
+            .pr_6()
             .flex()
             .items_center()
-            .justify_between()
+            .gap_2()
+            .child(app_icon(28.))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_8()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(app_icon(32.))
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Reframed"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(0xd1d5d0))
-                            .child("Gallery"),
-                    ),
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Reframed"),
             )
             .child(
                 div()
@@ -561,579 +878,489 @@ impl Gallery {
                     .h_full()
                     .window_control_area(WindowControlArea::Drag),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .id("motion-toggle")
-                            .px_2()
-                            .py_2()
-                            .text_xs()
-                            .text_color(rgb(0xb4bcb5))
-                            .cursor_pointer()
-                            .child(if self.motion_enabled {
-                                "Motion on"
-                            } else {
-                                "Motion off"
-                            })
-                            .on_click(cx.listener(|app, _, _, cx| app.toggle_motion(cx))),
-                    )
-                    .child(
-                        div()
-                            .id("show-walkthrough")
-                            .px_2()
-                            .py_2()
-                            .text_xs()
-                            .text_color(rgb(0xb4bcb5))
-                            .cursor_pointer()
-                            .opacity(if self.applying { 0.4 } else { 1. })
-                            .child("Guide")
-                            .on_click(cx.listener(|app, _, window, cx| app.show_intro(window, cx))),
-                    )
-                    .child(self.search(window, cx))
-                    .child(
-                        div()
-                            .id("refresh")
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(blend(SURFACE, 0x303431, self.motion("refresh")))
-                            .text_sm()
-                            .cursor_pointer()
-                            .opacity(if self.applying || self.loading {
-                                0.4
-                            } else {
-                                1.
-                            })
-                            .on_hover(cx.listener(|app, hover, _, cx| {
-                                app.set_motion("refresh", if *hover { 1. } else { 0. }, 180, cx)
-                            }))
-                            .child(if self.loading {
-                                "Loading…"
-                            } else {
-                                "Refresh"
-                            })
-                            .on_click(cx.listener(|app, _, _, cx| app.load(true, cx))),
-                    ),
-            )
+            .child(self.button(
+                "motion-toggle",
+                if self.motion_enabled {
+                    "Motion on"
+                } else {
+                    "Motion off"
+                },
+                true,
+                cx,
+            ))
+            .child(self.button("show-walkthrough", "Guide", !self.applying, cx))
+            .child(self.gallery_search(cx))
+            .child(self.button(
+                "refresh",
+                if self.visible_loading() && (self.searching() || self.last_load_refresh) {
+                    "Refreshing…"
+                } else {
+                    "Refresh"
+                },
+                !self.visible_loading() && !self.applying,
+                cx,
+            ))
             .into_any_element()
     }
-    fn hero(
-        &self,
-        art: Option<Artwork>,
-        height: f32,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let picture = art.as_ref().and_then(|a| {
-            self.hero_previews
-                .get(&a.id)
-                .or_else(|| self.previews.get(&a.id).and_then(|p| p.as_ref().ok()))
-        });
-        let background = match picture {
-            Some(path) => fade(
-                img(path.clone())
-                    .absolute()
-                    .inset_0()
-                    .w_full()
-                    .h(px(height))
-                    .object_fit(ObjectFit::Cover),
-                SharedString::from(format!(
-                    "hero-image-{}-{}",
-                    self.selection_epoch,
-                    path.display()
-                )),
-                350,
-                self.motion_enabled,
-            ),
-            None => div()
-                .absolute()
-                .inset_0()
-                .w_full()
-                .h(px(height))
-                .bg(rgb(SURFACE))
-                .into_any_element(),
-        };
-        let mut hero = div()
+    fn gallery_search(&self, cx: &Context<Self>) -> AnyElement {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(218.))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(0x393d3a))
+                    .overflow_hidden()
+                    .relative()
+                    .child(self.search_input.clone())
+                    .child(self.semantic(
+                        "search".into(),
+                        "Search Reframed".into(),
+                        AccessibilityRole::TextField,
+                        self.query.clone(),
+                        true,
+                        false,
+                        false,
+                    )),
+            )
+            .when(!self.query.is_empty(), |d| {
+                d.child(self.button("clear-search", "Clear", true, cx))
+            })
+            .into_any_element()
+    }
+    fn hero(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let art = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.all_artworks().find(|a| &a.id == id));
+        let height = (f32::from(window.viewport_size().width) * 0.375).clamp(405., 520.);
+        let mut view = div()
             .relative()
             .w_full()
             .h(px(height))
             .flex_none()
             .overflow_hidden()
-            .bg(rgb(SURFACE))
-            .child(background)
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                90.,
-                linear_color_stop(rgba(0x090a0ae8), 0.),
-                linear_color_stop(rgba(0x090a0a00), 0.82),
-            )))
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0x090a0a00), 0.42),
-                linear_color_stop(rgb(CANVAS), 1.),
-            )))
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(120.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(rgba(0x090a0a99), 0.),
-                        linear_color_stop(rgba(0x090a0a00), 1.),
-                    )),
-            )
-            .child(self.header(window, cx));
+            .bg(rgb(CANVAS));
         if let Some(art) = art {
+            let picture = self
+                .hero_previews
+                .get(&art.id)
+                .or_else(|| self.previews.get(&art.id).and_then(|p| p.as_ref().ok()));
+            if let Some(path) = picture {
+                view = view.child(
+                    img(path.clone())
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Cover),
+                );
+            }
+            view = view
+                .child(div().absolute().inset_0().bg(linear_gradient(
+                    90.,
+                    linear_color_stop(rgba(0x090a0aee), 0.),
+                    linear_color_stop(rgba(0x090a0a00), 0.82),
+                )))
+                .child(div().absolute().inset_0().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(rgba(0x090a0a88), 0.),
+                    linear_color_stop(rgba(0x090a0a00), 0.3),
+                )))
+                .child(div().absolute().inset_0().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(rgba(0x090a0a00), 0.35),
+                    linear_color_stop(rgba(0x090a0aff), 0.92),
+                )));
             let title = self
                 .detail
                 .as_ref()
                 .map(|d| d.title.clone())
-                .unwrap_or(art.alt.clone());
+                .unwrap_or_else(|| art.title().to_owned());
             let artist = self
                 .detail
                 .as_ref()
                 .map(|d| d.artist.clone())
                 .unwrap_or_else(|| art.artist().to_owned());
-            let ready = self.detail.is_some() && !self.applying && !self.loading;
+            let width = (f32::from(window.viewport_size().width) * 0.52).min(650.);
             let failed =
-                self.previews.get(&art.id).is_some_and(|p| p.is_err()) && picture.is_none();
-            let retry = art.clone();
-            let content_width = (f32::from(window.viewport_size().width) * 0.52).min(650.);
-            hero = hero.child(
+                picture.is_none() && self.previews.get(&art.id).is_some_and(|p| p.is_err());
+            view = view.child(
                 div()
                     .absolute()
                     .left(px(32.))
-                    .bottom(px(40. + 8. * self.selection_progress()))
-                    .opacity(self.selection_progress())
-                    .w(px(content_width))
+                    .bottom(px(if self.status.is_empty() { 140. } else { 226. }))
+                    .w(px(width))
+                    .max_h(px(height
+                        - 96.
+                        - if self.status.is_empty() { 140. } else { 226. }))
+                    .id("preview-metadata-scroll")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.metadata_scroll)
+                    .child(self.semantic(
+                        "hero-metadata-viewport".into(),
+                        String::new(),
+                        AccessibilityRole::StaticText,
+                        String::new(),
+                        true,
+                        false,
+                        false,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_none()
+                                    .text_size(px(36.))
+                                    .line_height(px(42.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .line_clamp(2)
+                                    .child(title.clone())
+                                    .child(self.semantic(
+                                        "selected-title".into(),
+                                        title,
+                                        AccessibilityRole::StaticText,
+                                        String::new(),
+                                        true,
+                                        false,
+                                        false,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_none()
+                                    .w_full()
+                                    .min_h(px(26.))
+                                    .text_lg()
+                                    .line_clamp(2)
+                                    .text_color(rgb(0xd1d5d0))
+                                    .child(artist.clone())
+                                    .child(self.semantic(
+                                        "selected-artist".into(),
+                                        artist,
+                                        AccessibilityRole::StaticText,
+                                        String::new(),
+                                        true,
+                                        false,
+                                        false,
+                                    )),
+                            )
+                            .when_some(
+                                self.detail.as_ref().and_then(|d| d.dimensions.clone()),
+                                |d, dimensions| {
+                                    d.child(self.text("selected-dimensions", dimensions))
+                                },
+                            )
+                            .when(picture.is_none(), |d| {
+                                d.child(self.text(
+                                    "preview-status",
+                                    if failed {
+                                        "Preview unavailable"
+                                    } else {
+                                        "Loading preview…"
+                                    },
+                                ))
+                            })
+                            .when(failed, |d| {
+                                d.child(self.button(
+                                    "retry-preview",
+                                    "Retry preview",
+                                    !self.applying,
+                                    cx,
+                                ))
+                            })
+                            .when(self.detail_loading, |d| {
+                                d.child(self.text("detail-progress", "Loading artwork details…"))
+                            })
+                            .when_some(self.detail_error.clone(), |d, error| {
+                                d.child(
+                                    div()
+                                        .id("detail-error-scroll")
+                                        .max_h(px(62.))
+                                        .overflow_y_scroll()
+                                        .child(self.text("detail-error", error)),
+                                )
+                                .child(self.button(
+                                    "retry-details",
+                                    "Retry details",
+                                    !self.applying,
+                                    cx,
+                                ))
+                            }),
+                    ),
+            );
+            view = view.child(
+                div()
+                    .absolute()
+                    .left(px(32.))
+                    .bottom(px(24.))
+                    .w(px(width))
                     .flex()
                     .flex_col()
                     .gap_3()
                     .child(
                         div()
-                            .text_size(px(36.))
-                            .line_height(px(42.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .line_clamp(3)
-                            .child(title),
-                    )
-                    .child(
-                        div()
                             .flex()
-                            .items_center()
                             .gap_3()
-                            .text_sm()
-                            .text_color(rgb(0xd1d5d0))
-                            .child(div().min_w_0().truncate().child(artist))
-                            .when_some(
-                                self.detail.as_ref().and_then(|d| d.dimensions.clone()),
-                                |d, dimensions| {
-                                    d.child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(rgb(0x9da59e))
-                                            .child(dimensions),
-                                    )
+                            .child(self.button(
+                                "apply",
+                                if self.applying {
+                                    "Downloading…"
+                                } else {
+                                    "Set wallpaper"
                                 },
-                            ),
+                                self.detail.is_some()
+                                    && !self.applying
+                                    && !(!self.searching()
+                                        && self.loading
+                                        && self.last_load_refresh),
+                                cx,
+                            ))
+                            .child(self.button("view-source", "View source", true, cx)),
                     )
-                    .when(failed, |d| {
+                    .child(div().text_xs().text_color(rgb(0xb2bbb2)).child(self.text(
+                        "display-scope",
+                        "Untouched original · All connected displays",
+                    )))
+                    .when(!self.status.is_empty(), |d| {
                         d.child(
                             div()
-                                .id("hero-retry")
+                                .id("apply-status-scroll")
+                                .h(px(56.))
                                 .text_sm()
-                                .text_color(rgb(0xc5cbc5))
-                                .cursor_pointer()
-                                .child("Preview unavailable · Retry")
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    if !app.applying {
-                                        app.previews.remove(&retry.id);
-                                        app.preview(retry.clone(), cx);
-                                        app.select(retry.clone(), cx);
-                                    }
-                                })),
+                                .text_color(rgb(0xc3d4c5))
+                                .overflow_y_scroll()
+                                .child(self.text("apply-status", self.status.clone())),
                         )
-                    })
-                    .when(picture.is_none() && !failed, |d| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0xa7afa8))
-                                .child("Loading preview…"),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .mt_2()
-                            .child(
-                                div()
-                                    .id("apply")
-                                    .px_5()
-                                    .py_3()
-                                    .rounded_md()
-                                    .bg(blend(TEXT, 0xdce2db, self.motion("apply")))
-                                    .text_color(rgb(CANVAS))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .opacity(if ready { 1. } else { 0.4 })
-                                    .on_hover(cx.listener(|app, hover, _, cx| {
-                                        app.set_motion(
-                                            "apply",
-                                            if *hover { 1. } else { 0. },
-                                            180,
-                                            cx,
-                                        )
-                                    }))
-                                    .child(if self.applying {
-                                        "Downloading…"
-                                    } else {
-                                        "Set wallpaper"
-                                    })
-                                    .on_click(cx.listener(move |app, _, _, cx| {
-                                        if ready {
-                                            app.apply(cx);
-                                        }
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("view-source")
-                                    .px_4()
-                                    .py_3()
-                                    .rounded_md()
-                                    .bg(rgba(
-                                        0xffffff00 | ((24. + 19. * self.motion("source")) as u32),
-                                    ))
-                                    .text_sm()
-                                    .cursor_pointer()
-                                    .on_hover(cx.listener(|app, hover, _, cx| {
-                                        app.set_motion(
-                                            "source",
-                                            if *hover { 1. } else { 0. },
-                                            180,
-                                            cx,
-                                        )
-                                    }))
-                                    .opacity(if self.applying { 0.4 } else { 1. })
-                                    .child("View source")
-                                    .on_click(cx.listener(move |app, _, _, cx| {
-                                        if !app.applying
-                                            && let Ok(url) = art.page_url()
-                                        {
-                                            cx.open_url(&url);
-                                        }
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0xa7afa8))
-                            .child("All connected displays"),
-                    ),
+                    }),
             );
         } else {
-            hero = hero.child(
+            view = view.child(
                 div()
                     .absolute()
                     .left(px(32.))
-                    .bottom(px(70.))
-                    .text_3xl()
-                    .child(if self.loading {
-                        "Loading the gallery…"
-                    } else {
-                        "Choose an artwork"
+                    .w(px(600.))
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_3()
+                    .bottom(px(60.))
+                    .child(self.text(
+                        "initial-status",
+                        if self.loading {
+                            "Loading the gallery…"
+                        } else {
+                            "Open the gallery to load artwork."
+                        },
+                    ))
+                    .when_some(self.catalogue_error.clone(), |d, error| {
+                        d.child(self.text("catalogue-error", error))
+                            .child(self.button(
+                                "load-more",
+                                "Retry loading artwork",
+                                !self.loading,
+                                cx,
+                            ))
                     }),
             );
         }
-        hero.into_any_element()
+        view = view.when(self.has_results_return, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(self.navigation_bottom() + 20.))
+                    .right(px(24.))
+                    .child(self.button("back-to-results", "Back to results", true, cx)),
+            )
+        });
+        view.into_any_element()
     }
-    fn tile(&self, art: Artwork, cx: &Context<Self>) -> AnyElement {
+    fn tile(&self, art: Artwork, width: f32, cx: &Context<Self>) -> AnyElement {
         let selected = self.selected.as_ref() == Some(&art.id);
         let picture = match self.previews.get(&art.id) {
-            Some(Ok(path)) => fade(
-                img(path.clone())
-                    .size_full()
-                    .rounded_lg()
-                    .object_fit(ObjectFit::Cover),
-                SharedString::from(format!("image-arrival-{}", art.id)),
-                250,
-                self.motion_enabled,
-            ),
+            Some(Ok(path)) => img(path.clone())
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .into_any_element(),
             Some(Err(_)) => div()
                 .p_3()
                 .text_xs()
                 .text_color(rgb(MUTED))
-                .child("Preview unavailable · click to retry")
+                .child("Preview unavailable · select to retry")
                 .into_any_element(),
             None => div()
                 .p_3()
                 .text_xs()
                 .text_color(rgb(MUTED))
-                .child("Loading…")
+                .child("Loading preview…")
                 .into_any_element(),
         };
         let click = art.clone();
-        let hover_key = format!("tile-{}", art.id);
-        let hover = if self.motion_enabled {
-            self.motion(&hover_key)
-        } else {
-            0.
-        };
+        let keyart = art.clone();
         div()
-            .id(SharedString::from(art.id.clone()))
-            .w(px(260.))
+            .relative()
+            .id(SharedString::from(format!("tile-{}", art.id)))
+            .track_focus(
+                &self.tiles[&art.id]
+                    .clone()
+                    .tab_stop(
+                        !self.applying
+                            && !self.intro_visible
+                            && self.keyboard_tile.as_ref() == Some(&art.id),
+                    )
+                    .tab_index(30),
+            )
+            .tab_index(0)
+            .tab_stop(self.keyboard_tile.as_ref() == Some(&art.id))
+            .w(px(width))
             .flex_none()
             .flex()
             .flex_col()
             .gap_2()
+            .p_1()
+            .rounded_lg()
             .cursor_pointer()
-            .relative()
-            .top(px(-2. * hover))
-            .opacity(1. - 0.04 * hover)
+            .border_1()
+            .border_color(if selected {
+                rgb(TEXT)
+            } else {
+                rgba(0xffffff00)
+            })
+            .focus(|s| s.border_color(rgb(0x98b8a8)))
+            .hover(|s| s.bg(rgb(SURFACE)))
             .child(
                 div()
                     .w_full()
-                    .h(px(146.25))
-                    .rounded_lg()
+                    .h(px((width - 10.) * 9. / 16.))
+                    .rounded_md()
                     .overflow_hidden()
                     .bg(rgb(SURFACE))
-                    .border_1()
-                    .border_color(if selected {
-                        rgb(TEXT)
-                    } else {
-                        rgba(0xffffff00)
-                    })
                     .child(picture),
             )
             .child(
                 div()
-                    .px_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(TEXT))
-                            .truncate()
-                            .child(art.alt.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .truncate()
-                            .child(art.artist().to_owned()),
-                    ),
+                    .text_sm()
+                    .line_height(px(19.))
+                    .line_clamp(2)
+                    .child(art.title().to_owned()),
             )
-            .on_hover(cx.listener(move |app, hover, _, cx| {
-                app.set_motion(hover_key.clone(), if *hover { 1. } else { 0. }, 150, cx)
-            }))
-            .on_click(cx.listener(move |app, _, _, cx| {
-                if app.applying {
-                    return;
-                }
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .truncate()
+                    .child(art.artist().to_owned()),
+            )
+            .child(self.semantic(
+                format!("tile-{}", art.id),
+                format!("{} by {}", art.title(), art.artist()),
+                AccessibilityRole::Button,
+                String::new(),
+                !self.applying,
+                selected,
+                false,
+            ))
+            .on_click(cx.listener(move |app, _, window, cx| {
+                app.keyboard_tile = Some(click.id.clone());
+                app.tiles[&click.id].focus(window);
                 if app.previews.get(&click.id).is_some_and(|p| p.is_err()) {
                     app.previews.remove(&click.id);
-                    app.preview(click.clone(), cx);
                 }
-                app.select(click.clone(), cx);
+                app.open_result(click.clone(), window, cx);
+            }))
+            .on_key_down(cx.listener(move |app, e: &KeyDownEvent, window, cx| {
+                if app.tiles[&keyart.id].is_focused(window) && app.navigation_key(e, window, cx) {
+                    return;
+                }
+                if !app.tiles[&keyart.id].is_focused(window)
+                    || !matches!(
+                        e.keystroke.key.as_str(),
+                        "enter" | "space" | "left" | "right" | "up" | "down"
+                    )
+                {
+                    return;
+                }
+                cx.stop_propagation();
+                match e.keystroke.key.as_str() {
+                    "enter" | "space" => {
+                        app.open_result(keyart.clone(), window, cx);
+                    }
+                    "left" | "right" | "up" | "down" => {
+                        let filtered = app.filtered();
+                        if let Some(i) = filtered.iter().position(|a| a.id == keyart.id) {
+                            let delta = match e.keystroke.key.as_str() {
+                                "left" => -1,
+                                "right" => 1,
+                                "up" => -(app.columns as isize),
+                                _ => app.columns as isize,
+                            };
+                            let next =
+                                (i as isize + delta).clamp(0, filtered.len() as isize - 1) as usize;
+                            app.keyboard_tile = Some(filtered[next].id.clone());
+                            app.tiles[&filtered[next].id].focus(window);
+                            app.reveal_row(next / app.columns + app.rows_start, false);
+                        }
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
+                cx.notify();
             }))
             .into_any_element()
-    }
-    fn shelf(
-        &self,
-        id: &'static str,
-        title: &'static str,
-        viewport_width: f32,
-        artworks: &[Artwork],
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let handle = if id == "recent-shelf" {
-            &self.recent_scroll
-        } else {
-            &self.explore_scroll
-        };
-        let previous = handle.clone();
-        let next = handle.clone();
-        div()
-            .w(px(viewport_width))
-            .min_w_0()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(
-                div()
-                    .px_8()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("{id}-previous")))
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(SURFACE))
-                                    .text_xs()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgb(0x303431)))
-                                    .child("Previous")
-                                    .on_click(cx.listener(move |app, _, _, cx| {
-                                        if !app.applying {
-                                            app.move_shelf(id, &previous, -828., cx);
-                                            cx.notify();
-                                        }
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("{id}-next")))
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(SURFACE))
-                                    .text_xs()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgb(0x303431)))
-                                    .child("Next")
-                                    .on_click(cx.listener(move |app, _, _, cx| {
-                                        if !app.applying {
-                                            app.move_shelf(id, &next, 828., cx);
-                                            cx.notify();
-                                        }
-                                    })),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .id(id)
-                    .w(px(viewport_width))
-                    .min_w_0()
-                    .h(px(210.))
-                    .overflow_x_scroll()
-                    .track_scroll(handle)
-                    .child(
-                        div()
-                            .w(px(artworks.len() as f32 * 276. + 48.))
-                            .flex_none()
-                            .flex()
-                            .gap_4()
-                            .px_8()
-                            .pb_3()
-                            .children(artworks.iter().cloned().map(|art| self.tile(art, cx))),
-                    ),
-            )
-            .into_any_element()
-    }
-    fn move_shelf(
-        &mut self,
-        id: &'static str,
-        handle: &ScrollHandle,
-        delta: f32,
-        cx: &mut Context<Self>,
-    ) {
-        let max = f32::from(handle.max_offset().width);
-        let current = f32::from(handle.offset().x);
-        let old_target = self.shelf_motion.get(id).map_or(current, |(_, t)| t.to);
-        let target = (old_target - delta).clamp(-max, 0.);
-        if self.motion_enabled {
-            self.shelf_motion.insert(
-                id,
-                (
-                    handle.clone(),
-                    Tween {
-                        from: current,
-                        to: target,
-                        start: Instant::now(),
-                        duration: Duration::from_millis(240),
-                    },
-                ),
-            );
-        } else {
-            handle.set_offset(point(px(target), px(0.)));
-        }
-        cx.notify();
     }
     fn footer(&self, cx: &Context<Self>) -> AnyElement {
         div()
-            .px_8()
-            .pb_8()
-            .pt_2()
+            .items_start()
+            .py_5()
             .flex()
             .flex_col()
-            .gap_4()
-            .child(
-                div()
-                    .id("load-more")
-                    .w(px(208.))
-                    .px_4()
-                    .py_2()
-                    .rounded_md()
-                    .bg(blend(SURFACE, 0x2b302c, self.motion("load-more")))
-                    .text_sm()
-                    .cursor_pointer()
-                    .on_hover(cx.listener(|app, hover, _, cx| {
-                        app.set_motion("load-more", if *hover { 1. } else { 0. }, 180, cx)
-                    }))
-                    .opacity(if self.applying || self.loading {
-                        0.4
-                    } else {
-                        1.
-                    })
-                    .child(if self.loading {
-                        "Loading…"
-                    } else if self.end {
-                        "You’ve reached the end"
-                    } else {
-                        "Load more artwork"
-                    })
-                    .on_click(cx.listener(|app, _, _, cx| app.load(false, cx))),
+            .gap_3()
+            .when(
+                !self.searching() && (!self.end || self.catalogue_error.is_some()),
+                |d| {
+                    d.child(self.button(
+                        "load-more",
+                        if self.loading {
+                            "Loading artwork…"
+                        } else if self.catalogue_error.is_some() {
+                            "Retry loading artwork"
+                        } else {
+                            "Load more artwork"
+                        },
+                        !self.loading,
+                        cx,
+                    ))
+                },
+            )
+            .when(
+                !self.searching() && self.end && self.catalogue_error.is_none(),
+                |d| {
+                    d.child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(MUTED))
+                            .child("You’ve reached the end of the catalogue"),
+                    )
+                },
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
                     .text_xs()
                     .text_color(rgb(MUTED))
-                    .child(format!("{} artworks loaded", self.artworks.len()))
-                    .child(
-                        div()
-                            .id("gallery-source")
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(rgb(TEXT)))
-                            .child("Artwork from reframed.gallery")
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                if !app.applying {
-                                    cx.open_url("https://www.reframed.gallery/");
-                                }
-                            })),
-                    ),
+                    .child(self.text("gallery-attribution", "Artwork from reframed.gallery")),
             )
             .into_any_element()
     }
 }
+
 impl Gallery {
     fn intro(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let (title, description) = match self.intro_step {
@@ -1143,7 +1370,7 @@ impl Gallery {
             ),
             1 => (
                 "Find your next view",
-                "Browse the artwork shelves with Previous and Next. Search by title or artist to find a piece among the artworks you’ve loaded.",
+                "Browse the artwork grid below the cinematic preview. Search Reframed by title or artist. Selecting a result brings its preview into view; Back to results restores your browsing position.",
             ),
             2 => (
                 "Make it yours",
@@ -1195,6 +1422,16 @@ impl Gallery {
             }
         });
         let title_element = div()
+            .relative()
+            .child(self.semantic(
+                "intro-title".into(),
+                title.into(),
+                AccessibilityRole::StaticText,
+                String::new(),
+                true,
+                false,
+                false,
+            ))
             .text_size(px(if self.intro_step == 0 { 54. } else { 36. }))
             .line_height(px(if self.intro_step == 0 { 62. } else { 44. }))
             .font_weight(FontWeight::SEMIBOLD)
@@ -1221,7 +1458,7 @@ impl Gallery {
                     .text_lg()
                     .line_height(px(28.))
                     .text_color(rgb(0xc3ccc4))
-                    .child(description),
+                    .child(self.text("intro-description", description)),
             );
         let copy = if self.motion_enabled {
             copy.with_animation(
@@ -1265,6 +1502,34 @@ impl Gallery {
                     .child(
                         div()
                             .id("intro-motion")
+                            .on_key_down(cx.listener(|app, e: &KeyDownEvent, window, cx| {
+                                if e.keystroke.key == "tab" {
+                                    cx.stop_propagation();
+                                    app.focus_step(e.keystroke.modifiers.shift, window, cx);
+                                    return;
+                                }
+                                if matches!(e.keystroke.key.as_str(), "enter" | "space") {
+                                    app.activate("intro-motion", window, cx);
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .relative()
+                            .track_focus(
+                                &self.controls["intro-motion"]
+                                    .clone()
+                                    .tab_stop(true)
+                                    .tab_index(control_tab_index("intro-motion")),
+                            )
+                            .tab_index(0)
+                            .child(self.semantic(
+                                "intro-motion".into(),
+                                "Motion".into(),
+                                AccessibilityRole::Button,
+                                String::new(),
+                                true,
+                                false,
+                                false,
+                            ))
                             .px_3()
                             .py_2()
                             .text_xs()
@@ -1280,6 +1545,34 @@ impl Gallery {
                     .child(
                         div()
                             .id("intro-skip")
+                            .on_key_down(cx.listener(|app, e: &KeyDownEvent, window, cx| {
+                                if e.keystroke.key == "tab" {
+                                    cx.stop_propagation();
+                                    app.focus_step(e.keystroke.modifiers.shift, window, cx);
+                                    return;
+                                }
+                                if matches!(e.keystroke.key.as_str(), "enter" | "space") {
+                                    app.activate("intro-skip", window, cx);
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .relative()
+                            .track_focus(
+                                &self.controls["intro-skip"]
+                                    .clone()
+                                    .tab_stop(true)
+                                    .tab_index(control_tab_index("intro-skip")),
+                            )
+                            .tab_index(0)
+                            .child(self.semantic(
+                                "intro-skip".into(),
+                                "Skip".into(),
+                                AccessibilityRole::Button,
+                                String::new(),
+                                true,
+                                false,
+                                false,
+                            ))
                             .px_3()
                             .py_2()
                             .rounded_md()
@@ -1318,6 +1611,44 @@ impl Gallery {
                                     .child(
                                         div()
                                             .id("intro-back")
+                                            .on_key_down(cx.listener(
+                                                |app, e: &KeyDownEvent, window, cx| {
+                                                    if e.keystroke.key == "tab" {
+                                                        cx.stop_propagation();
+                                                        app.focus_step(
+                                                            e.keystroke.modifiers.shift,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                        return;
+                                                    }
+                                                    if matches!(
+                                                        e.keystroke.key.as_str(),
+                                                        "enter" | "space"
+                                                    ) {
+                                                        app.activate("intro-back", window, cx);
+                                                        cx.stop_propagation();
+                                                    }
+                                                },
+                                            ))
+                                            .relative()
+                                            .track_focus(
+                                                &self.controls["intro-back"]
+                                                    .clone()
+                                                    .tab_stop(self.intro_step > 0)
+                                                    .tab_index(control_tab_index("intro-back")),
+                                            )
+                                            .tab_index(0)
+                                            .tab_stop(self.intro_step > 0)
+                                            .child(self.semantic(
+                                                "intro-back".into(),
+                                                "Back".into(),
+                                                AccessibilityRole::Button,
+                                                String::new(),
+                                                self.intro_step > 0,
+                                                false,
+                                                false,
+                                            ))
                                             .px_4()
                                             .py_3()
                                             .rounded_md()
@@ -1332,6 +1663,43 @@ impl Gallery {
                                     .child(
                                         div()
                                             .id("intro-next")
+                                            .on_key_down(cx.listener(
+                                                |app, e: &KeyDownEvent, window, cx| {
+                                                    if e.keystroke.key == "tab" {
+                                                        cx.stop_propagation();
+                                                        app.focus_step(
+                                                            e.keystroke.modifiers.shift,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                        return;
+                                                    }
+                                                    if matches!(
+                                                        e.keystroke.key.as_str(),
+                                                        "enter" | "space"
+                                                    ) {
+                                                        app.activate("intro-next", window, cx);
+                                                        cx.stop_propagation();
+                                                    }
+                                                },
+                                            ))
+                                            .relative()
+                                            .track_focus(
+                                                &self.controls["intro-next"]
+                                                    .clone()
+                                                    .tab_stop(true)
+                                                    .tab_index(control_tab_index("intro-next")),
+                                            )
+                                            .tab_index(0)
+                                            .child(self.semantic(
+                                                "intro-next".into(),
+                                                "Continue walkthrough".into(),
+                                                AccessibilityRole::Button,
+                                                String::new(),
+                                                true,
+                                                false,
+                                                false,
+                                            ))
                                             .px_5()
                                             .py_3()
                                             .rounded_md()
@@ -1365,112 +1733,175 @@ impl Gallery {
 }
 impl Render for Gallery {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.set_motion(
-            "search-focus",
-            if self.focus.is_focused(window) {
-                1.
-            } else {
-                0.
-            },
-            180,
-            cx,
-        );
-        let mut animating = self.interactions.values().any(Tween::active)
-            || self.selection_start.elapsed() < Duration::from_millis(350);
-        self.shelf_motion.retain(|_, (handle, tween)| {
-            handle.set_offset(point(px(tween.value()), px(0.)));
-            let active = tween.active();
-            animating |= active;
-            active
-        });
-        if self.motion_enabled && animating {
-            window.request_animation_frame();
+        if !self.intro_visible
+            && (window.focused(cx).is_none() || self.intro_focus.is_focused(window))
+        {
+            self.focus.focus(window);
         }
-        let status = div().px_8().text_xs().text_color(rgb(0x9ba39c)).child(
-            self.intro_save_error
-                .clone()
-                .unwrap_or_else(|| self.status.clone()),
-        );
-        let status = if self.motion_enabled && (self.loading || self.applying) {
-            status
-                .with_animation(
-                    "loading-pulse",
-                    Animation::new(Duration::from_millis(1300))
-                        .repeat()
-                        .with_easing(|t| 0.65 + 0.35 * (std::f32::consts::PI * t).sin()),
-                    |e, t| e.opacity(t),
-                )
-                .into_any_element()
-        } else {
-            fade(
-                status,
-                SharedString::from(format!("status-{}-{}", self.status_epoch, self.status)),
-                200,
-                self.motion_enabled,
+        if !self.navigation_subscribed {
+            self.navigation_subscribed = true;
+            cx.subscribe_in(
+                &self.search_input,
+                window,
+                |app, _, event: &Navigate, window, cx| app.focus_step(event.0, window, cx),
             )
-        };
-        let query = self.query.to_lowercase();
-        let filtered: Vec<_> = self
-            .artworks
+            .detach();
+        }
+        self.search_input.update(cx, |input, cx| {
+            input.set_tab_enabled(!self.intro_visible, cx)
+        });
+        self.ax_nodes.borrow_mut().clear();
+        if let Some(receiver) = self.ax_receiver.take() {
+            *self.ax.borrow_mut() = AccessibilityBridge::new(window, self.ax_sender.clone());
+            let this = cx.entity().downgrade();
+            window
+                .spawn(cx, async move |cx| {
+                    while let Ok(action) = receiver.recv().await {
+                        let result = this.update_in(cx, |app, window, cx| {
+                            match action {
+                                AccessibilityAction::Press(id) => {
+                                    if let Some(id) = id.strip_prefix("tile-") {
+                                        let art = app.all_artworks().find(|a| a.id == id).cloned();
+                                        if let Some(art) = art {
+                                            app.open_result(art, window, cx);
+                                        }
+                                    } else {
+                                        app.activate(&id, window, cx);
+                                    }
+                                }
+                                AccessibilityAction::SetValue(id, value) => {
+                                    if id == "search" {
+                                        app.search_input
+                                            .update(cx, |input, cx| input.set_value(value, cx));
+                                    }
+                                }
+                                AccessibilityAction::SetSelection(id, start, length) => {
+                                    if id == "search" {
+                                        app.search_input.update(cx, |input, cx| {
+                                            input.set_selection(start, length, cx)
+                                        });
+                                    }
+                                }
+                                AccessibilityAction::Focus(id) => {
+                                    if id == "search" {
+                                        app.search_input.focus_handle(cx).focus(window);
+                                    } else if let Some(id) = id.strip_prefix("tile-") {
+                                        if let Some(handle) = app.tiles.get(id) {
+                                            handle.focus(window);
+                                            app.keyboard_tile = Some(id.into());
+                                            if let Some(index) =
+                                                app.filtered().iter().position(|a| a.id == id)
+                                            {
+                                                app.reveal_row(
+                                                    index / app.columns + app.rows_start,
+                                                    false,
+                                                );
+                                            }
+                                        }
+                                    } else if let Some(handle) = app.controls.get(&id) {
+                                        handle.focus(window);
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        });
+                        if result.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+        }
+        let scroll = self.grid_scroll.clone();
+        let metadata_scroll = self.metadata_scroll.clone();
+        let ax = self.ax.clone();
+        let nodes = self.ax_nodes.clone();
+        let controls = self.controls.clone();
+        let tiles = self.tiles.clone();
+        let input = self.search_input.clone();
+        let intro_visible = self.intro_visible;
+        let navigation_bottom = self.navigation_bottom();
+        let width = f32::from(window.viewport_size().width) - 48.;
+        self.columns = if width >= 4. * 260. + 48. { 4 } else { 3 };
+        let tile_width = (width - (self.columns - 1) as f32 * 16.) / self.columns as f32;
+        let filtered = self.filtered();
+        let show_hero = self.query.trim().is_empty() || self.selected_result_preview;
+        self.rows_start = 3;
+        let notice_visible = self.visible_loading()
+            || !self.visible_notice().is_empty()
+            || self.visible_error().is_some();
+        if !filtered
             .iter()
-            .filter(|a| {
-                format!("{} {}", a.title(), a.artist())
-                    .to_lowercase()
-                    .contains(&query)
-            })
-            .cloned()
-            .collect();
-        let selected = self
-            .selected
-            .as_ref()
-            .and_then(|id| self.artworks.iter().find(|a| &a.id == id))
-            .cloned();
-        let split = filtered.len().min(12);
-        let hero_height = (f32::from(window.viewport_size().width) * 0.375).clamp(405., 520.);
-        let page = div()
-            .id("page-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .bg(rgb(CANVAS))
-            .text_color(rgb(TEXT))
-            .child(
+            .any(|a| Some(&a.id) == self.keyboard_tile.as_ref())
+        {
+            self.keyboard_tile = filtered.first().map(|a| a.id.clone());
+        }
+        if self.grid_scroll.bounds_for_item(self.rows_start).is_none() {
+            for art in filtered.iter().take(self.columns * 3).cloned() {
+                self.preview(art, cx);
+            }
+        }
+        let heading = if self.query.trim().is_empty() {
+            "Recent artworks"
+        } else {
+            "Search results"
+        };
+        let count = if !self.searching() {
+            format!("{} artworks loaded", self.artworks.len())
+        } else if self.search.loading {
+            "Searching Reframed…".into()
+        } else if self.search.error.is_some() {
+            "Search unavailable".into()
+        } else if self.search.query.chars().count() < 2 {
+            "Enter at least 2 characters to search.".into()
+        } else {
+            format!("{} artwork results from Reframed", filtered.len())
+        };
+        let empty: String = if self.searching() {
+            if self.search.loading {
+                "Searching Reframed…".into()
+            } else if self.search.error.is_some() {
+                "Search could not be completed. Retry below.".into()
+            } else if self.search.query.chars().count() < 2 {
+                "Enter at least 2 characters to search.".into()
+            } else {
+                "No matching artworks found on Reframed.".into()
+            }
+        } else if self.loading {
+            "Loading artworks…".into()
+        } else if self.catalogue_error.is_some() {
+            "The gallery could not be loaded. Retry below.".into()
+        } else {
+            "No artwork is available in the catalogue.".into()
+        };
+        let rows: Vec<_> = filtered
+            .chunks(self.columns)
+            .map(|row| {
                 div()
-                    .w_full()
+                    .px_6()
+                    .pb_4()
                     .flex()
-                    .flex_col()
-                    .gap_6()
-                    .child(self.hero(selected, hero_height, window, cx))
-                    .child(status)
-                    .when(filtered.is_empty(), |d| {
-                        d.child(div().px_8().py_6().text_sm().text_color(rgb(MUTED)).child(
-                            if self.loading {
-                                "Loading artworks…"
-                            } else {
-                                "No artwork found. Clear your search or Refresh."
-                            },
-                        ))
-                    })
-                    .when(!filtered.is_empty(), |d| {
-                        d.child(self.shelf(
-                            "recent-shelf",
-                            "Recent artworks",
-                            f32::from(window.viewport_size().width),
-                            &filtered[..split],
-                            cx,
-                        ))
-                    })
-                    .when(filtered.len() > split, |d| {
-                        d.child(self.shelf(
-                            "explore-shelf",
-                            "More to explore",
-                            f32::from(window.viewport_size().width),
-                            &filtered[split..],
-                            cx,
-                        ))
-                    })
-                    .child(self.footer(cx)),
-            );
-        if self.intro_visible && !self.intro_focus.is_focused(window) {
+                    .gap_4()
+                    .children(
+                        row.iter()
+                            .cloned()
+                            .map(|art| self.tile(art, tile_width, cx)),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let align_results = std::mem::take(&mut self.focus_results_after_layout);
+        let this = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            let _ = this.update(cx, |app, cx| {
+                if align_results {
+                    app.reveal_row(app.rows_start - 1, true);
+                    cx.notify();
+                }
+                app.prioritize_previews(cx);
+            });
+        });
+        if self.intro_visible && !self.intro_focus.contains_focused(window, cx) {
             self.intro_focus.focus(window);
         }
         div()
@@ -1478,7 +1909,364 @@ impl Render for Gallery {
             .size_full()
             .bg(rgb(CANVAS))
             .text_color(rgb(TEXT))
-            .child(page)
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("artwork-grid")
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.grid_scroll)
+                    .child(self.semantic(
+                        "grid-viewport".into(),
+                        String::new(),
+                        AccessibilityRole::StaticText,
+                        String::new(),
+                        true,
+                        false,
+                        false,
+                    ))
+                    .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                    .when(show_hero, |d| d.child(self.hero(window, cx)))
+                    .when(!show_hero, |d| {
+                        d.child(
+                            div()
+                                .h(px(if notice_visible { 160. } else { 72. }))
+                                .flex_none(),
+                        )
+                    })
+                    .child(
+                        div()
+                            .px_6()
+                            .py_5()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(heading),
+                            )
+                            .child(self.text("results-count", count)),
+                    )
+                    .children(rows)
+                    .when(filtered.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .px_6()
+                                .py_5()
+                                .child(self.text("empty-results", empty))
+                                .when(!self.query.is_empty(), |d| {
+                                    d.child(div().flex().gap_3().child(self.button(
+                                        "empty-clear-search",
+                                        "Clear search",
+                                        true,
+                                        cx,
+                                    )))
+                                }),
+                        )
+                    })
+                    .child(div().px_6().child(self.footer(cx))),
+            )
+            .when(
+                self.visible_loading()
+                    || !self.visible_notice().is_empty()
+                    || self.visible_error().is_some(),
+                |d| {
+                    d.child(
+                        div()
+                            .id("catalogue-feedback")
+                            .block_mouse_except_scroll()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(72.))
+                            .max_h(px(88.))
+                            .overflow_y_scroll()
+                            .bg(rgba(0x090a0ae8))
+                            .px_6()
+                            .py_2()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .when(self.visible_loading(), |d| {
+                                        d.child(self.text(
+                                            "catalogue-loading",
+                                            if self.searching() {
+                                                "Searching Reframed…"
+                                            } else {
+                                                "Loading artwork…"
+                                            },
+                                        ))
+                                    })
+                                    .when(!self.visible_notice().is_empty(), |d| {
+                                        d.child(self.text(
+                                            "catalogue-notice",
+                                            self.visible_notice().clone(),
+                                        ))
+                                    })
+                                    .when_some(self.visible_error().clone(), |d, error| {
+                                        d.child(
+                                            div()
+                                                .line_clamp(2)
+                                                .child(self.text("catalogue-error", error)),
+                                        )
+                                    }),
+                            )
+                            .when(
+                                !self.searching()
+                                    && filtered.iter().any(|a| self.new_ids.contains(&a.id)),
+                                |d| d.child(self.button("show-new", "Show new artwork", true, cx)),
+                            )
+                            .when(self.visible_error().is_some(), |d| {
+                                d.child(self.button(
+                                    "retry-catalogue",
+                                    if self.searching() {
+                                        "Retry search"
+                                    } else {
+                                        "Retry loading artwork"
+                                    },
+                                    !self.visible_loading(),
+                                    cx,
+                                ))
+                            }),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .id("pinned-header")
+                    .block_mouse_except_scroll()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(72.))
+                    .bg(rgba(0x090a0a99))
+                    .child(self.header(cx)),
+            )
             .when(self.intro_visible, |d| d.child(self.intro(window, cx)))
+            .child(
+                gpui::canvas(
+                    |_, _, _| {},
+                    move |_, _, window, cx| {
+                        if let Some(bridge) = ax.borrow_mut().as_mut() {
+                            let mut snapshot = nodes.borrow().clone();
+                            let grid_bounds = Some(scroll.bounds());
+                            let metadata_bounds = Some(metadata_scroll.bounds());
+                            for node in &mut snapshot {
+                                let pinned = matches!(
+                                    node.id.as_str(),
+                                    "search"
+                                        | "motion-toggle"
+                                        | "show-walkthrough"
+                                        | "refresh"
+                                        | "clear-search"
+                                        | "retry-catalogue"
+                                        | "show-new"
+                                        | "preferences-error"
+                                ) || node.id.starts_with("catalogue-")
+                                    || node.id.starts_with("intro-");
+                                if !pinned && let Some(bounds) = grid_bounds {
+                                    let visible = gpui::Bounds::new(
+                                        point(px(0.), px(navigation_bottom)),
+                                        gpui::size(
+                                            window.viewport_size().width,
+                                            window.viewport_size().height - px(navigation_bottom),
+                                        ),
+                                    );
+                                    node.bounds =
+                                        node.bounds.intersect(&bounds).intersect(&visible);
+                                }
+                                if matches!(
+                                    node.id.as_str(),
+                                    "selected-title"
+                                        | "selected-artist"
+                                        | "selected-dimensions"
+                                        | "preview-status"
+                                        | "retry-preview"
+                                        | "detail-progress"
+                                        | "detail-error"
+                                        | "retry-details"
+                                ) && let Some(bounds) = metadata_bounds
+                                {
+                                    node.bounds = node.bounds.intersect(&bounds);
+                                }
+                            }
+                            snapshot.retain(|n| {
+                                n.id != "grid-viewport"
+                                    && n.id != "hero-metadata-viewport"
+                                    && n.bounds.size.width > px(0.)
+                                    && n.bounds.size.height > px(0.)
+                            });
+                            for node in &mut snapshot {
+                                if node.id == "search" {
+                                    node.focused = input.focus_handle(cx).is_focused(window);
+                                    node.selected_range = Some(input.read(cx).utf16_selection());
+                                } else if let Some(handle) = controls.get(&node.id).or_else(|| {
+                                    node.id.strip_prefix("tile-").and_then(|id| tiles.get(id))
+                                }) {
+                                    node.focused = handle.is_focused(window);
+                                }
+                            }
+                            if intro_visible {
+                                snapshot.retain(|node| node.id.starts_with("intro-"));
+                            } else {
+                                snapshot.retain(|node| !node.id.starts_with("intro-"));
+                            }
+                            bridge.update(snapshot);
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+    }
+}
+
+fn request_page(current: usize, refresh: bool) -> usize {
+    if refresh { 1 } else { current + 1 }
+}
+fn selection_retained(artworks: &[Artwork], selected: Option<&str>) -> bool {
+    selected.is_some_and(|id| artworks.iter().any(|a| a.id == id))
+}
+fn append_unique(artworks: &mut Vec<Artwork>, items: Vec<Artwork>) -> Vec<Artwork> {
+    let mut added = vec![];
+    for item in items {
+        if !artworks.iter().any(|a| a.id == item.id) {
+            added.push(item.clone());
+            artworks.push(item);
+        }
+    }
+    added
+}
+#[derive(Default)]
+struct SiteSearch {
+    epoch: u64,
+    query: String,
+    results: Vec<Artwork>,
+    loading: bool,
+    error: Option<String>,
+}
+impl SiteSearch {
+    fn begin(&mut self, query: &str) -> u64 {
+        self.epoch += 1;
+        self.query = query.trim().into();
+        self.results.clear();
+        self.error = None;
+        self.loading = self.query.chars().count() >= 2;
+        self.epoch
+    }
+    fn browse_can_update_view(&self, epoch: u64) -> bool {
+        self.epoch == epoch && self.query.is_empty()
+    }
+    fn current(&self, epoch: u64) -> bool {
+        self.epoch == epoch && self.loading
+    }
+    fn complete(&mut self, epoch: u64, result: Result<Vec<Artwork>, String>) -> bool {
+        if !self.current(epoch) {
+            return false;
+        }
+        self.loading = false;
+        match result {
+            Ok(items) => self.results = items,
+            Err(error) => self.error = Some(error),
+        }
+        true
+    }
+}
+
+fn control_tab_index(id: &str) -> isize {
+    match id {
+        "motion-toggle" | "intro-motion" => 0,
+        "show-walkthrough" | "intro-skip" => 1,
+        "clear-search" | "intro-back" => 3,
+        "refresh" | "intro-next" => 4,
+        "show-new" => 10,
+        "retry-catalogue" => 11,
+        "back-to-results" => 20,
+        "retry-preview" => 21,
+        "retry-details" => 22,
+        "apply" => 23,
+        "view-source" => 24,
+        "empty-clear-search" => 31,
+        "load-more" => 40,
+        _ => 50,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn art() -> Artwork {
+        Artwork {
+            id: "one".into(),
+            key: "originals/Édouard Manet - Café.jpg".into(),
+            alt: "Café scene".into(),
+            href: "/art/one".into(),
+        }
+    }
+    #[test]
+    fn duplicate_page_does_not_remove_items_or_selection() {
+        let a = art();
+        let mut loaded = vec![a.clone()];
+        let returned = vec![a.clone()];
+        assert!(!returned.is_empty());
+        assert!(append_unique(&mut loaded, returned).is_empty());
+        assert_eq!(loaded.len(), 1);
+        assert!(selection_retained(&loaded, Some("one")));
+        assert!(!selection_retained(&loaded, Some("missing")));
+    }
+    #[test]
+    fn failed_page_retries_without_advancing() {
+        assert_eq!(request_page(3, false), 4);
+        assert_eq!(request_page(3, false), 4);
+        assert_eq!(request_page(3, true), 1);
+    }
+    #[test]
+    fn site_matches_are_displayed_without_local_title_filtering() {
+        let mut search = SiteSearch::default();
+        let epoch = search.begin("landscape");
+        assert!(search.complete(epoch, Ok(vec![art()])));
+        assert_eq!(search.results[0].title(), "Café scene");
+        let epoch = search.begin("unmatched");
+        assert!(search.complete(epoch, Ok(vec![])));
+        assert!(search.results.is_empty());
+        assert!(!search.loading);
+        assert!(search.error.is_none());
+    }
+    #[test]
+    fn search_epochs_discard_clear_retype_and_out_of_order_results() {
+        let mut search = SiteSearch::default();
+        assert!(search.browse_can_update_view(0));
+        let old = search.begin(" café ");
+        assert!(!search.browse_can_update_view(0));
+        search.begin(" ");
+        assert!(!search.loading);
+        assert!(!search.browse_can_update_view(0));
+        assert!(search.browse_can_update_view(search.epoch));
+        let latest = search.begin("café");
+        assert!(!search.complete(old, Ok(vec![art()])));
+        assert!(search.results.is_empty());
+        assert!(search.complete(latest, Err("offline".into())));
+        assert!(!search.loading);
+        assert_eq!(search.error.as_deref(), Some("offline"));
+        let retry = search.begin("café");
+        assert!(search.error.is_none());
+        assert!(search.complete(retry, Ok(vec![art()])));
+        assert_eq!(search.results.len(), 1);
+        let short = search.begin("é");
+        assert!(!search.current(short));
+        assert!(search.results.is_empty());
     }
 }

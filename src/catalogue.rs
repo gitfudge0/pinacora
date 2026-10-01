@@ -88,7 +88,81 @@ pub fn fetch_page(page: usize) -> Result<Vec<Artwork>> {
     } else {
         format!("{SITE}/recent/page/{page}")
     };
-    parse_catalogue(&get_text(&path)?)
+    match get_text(&path) {
+        Ok(html) => parse_catalogue(&html),
+        Err(error) => {
+            if let Some(ureq::Error::Status(status, _)) = error.downcast_ref::<ureq::Error>()
+                && is_pagination_end(page, *status)
+            {
+                return Ok(Vec::new());
+            }
+            Err(error)
+        }
+    }
+}
+/// The site's navigation search returns its top matches without pagination.
+pub fn search_url(query: &str) -> Result<url::Url> {
+    let mut url = url::Url::parse(SITE)?.join("/api/search/nav")?;
+    url.query_pairs_mut().append_pair("q", query.trim());
+    Ok(url)
+}
+pub fn fetch_search(query: &str) -> Result<Vec<Artwork>> {
+    if query.trim().chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    parse_search(&get_text(search_url(query)?.as_str())?)
+}
+pub fn parse_search(body: &str) -> Result<Vec<Artwork>> {
+    #[derive(Deserialize)]
+    struct Response {
+        results: Vec<serde_json::Value>,
+    }
+    #[derive(Deserialize)]
+    struct Hit {
+        id: String,
+        title: String,
+        r2_key: String,
+        href: String,
+    }
+    let response: Response = serde_json::from_str(body).context("Invalid search response")?;
+    let mut artworks = Vec::new();
+    let mut seen = HashSet::new();
+    for result in response.results {
+        let kind = result
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .context("Search result is missing its kind")?;
+        if kind != "artwork" {
+            continue;
+        }
+        let hit: Hit = serde_json::from_value(result).context("Invalid artwork search result")?;
+        let art = Artwork {
+            id: hit.id,
+            key: hit.r2_key,
+            alt: hit.title,
+            href: hit.href,
+        };
+        if !valid_artwork(&art) {
+            bail!("Unsafe or incomplete artwork search metadata");
+        }
+        if seen.insert(art.id.clone()) {
+            artworks.push(art);
+        }
+    }
+    Ok(artworks)
+}
+fn valid_artwork(item: &Artwork) -> bool {
+    !item.id.is_empty()
+        && !item.alt.is_empty()
+        && item.key.starts_with("originals/")
+        && !item
+            .key
+            .split('/')
+            .any(|s| s == "." || s == ".." || s.is_empty())
+        && item.page_url().is_ok()
+}
+fn is_pagination_end(page: usize, status: u16) -> bool {
+    page > 1 && status == 404
 }
 pub fn parse_catalogue(html: &str) -> Result<Vec<Artwork>> {
     let marker = "self.__next_f.push([1,";
@@ -101,26 +175,29 @@ pub fn parse_catalogue(html: &str) -> Result<Vec<Artwork>> {
     }
     let mut found = Vec::new();
     let mut seen = HashSet::new();
+    let mut empty_grid = false;
     // Deserialize from each opening brace: serde reads exactly one balanced object,
     // including braces and escaped quotes inside strings.
     for (offset, _) in flight.match_indices('{') {
+        let mut props =
+            serde_json::Deserializer::from_str(&flight[offset..]).into_iter::<serde_json::Value>();
+        if let Some(Ok(props)) = props.next()
+            && props["className"].as_str().is_some_and(|name| {
+                name.starts_with("TileGrid-module__") && name.ends_with("__grid")
+            })
+            && props["children"].as_array().is_some_and(Vec::is_empty)
+        {
+            empty_grid = true;
+        }
         let mut de = serde_json::Deserializer::from_str(&flight[offset..]).into_iter::<Artwork>();
         if let Some(Ok(item)) = de.next()
-            && !item.id.is_empty()
-            && !item.key.is_empty()
-            && !item.alt.is_empty()
-            && item.key.starts_with("originals/")
-            && !item
-                .key
-                .split('/')
-                .any(|s| s == "." || s == ".." || s.is_empty())
-            && item.page_url().is_ok()
+            && valid_artwork(&item)
             && seen.insert(item.id.clone())
         {
             found.push(item);
         }
     }
-    if found.is_empty() {
+    if found.is_empty() && !empty_grid {
         bail!("No artwork metadata found. Reframed may have changed its catalogue format.");
     }
     Ok(found)
@@ -171,6 +248,63 @@ pub fn fetch_detail(art: &Artwork) -> Result<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_maps_only_artworks_and_preserves_server_matches() {
+        let body = r#"{"results":[{"kind":"artist","id":"artist"},{"kind":"tag","id":"tag"},{"kind":"artwork","id":"one","r2_key":"originals/Édouard Manet - Café.jpg","title":"Café","href":"/artwork/one"}]}"#;
+        let hits = parse_search(body).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title(), "Café");
+        assert_eq!(hits[0].artist(), "Édouard Manet");
+        assert!(parse_search(r#"{"results":[]}"#).unwrap().is_empty());
+        assert!(
+            parse_search(r#"{"results":[{"kind":"collection"}]}"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn search_rejects_malformed_and_unsafe_metadata() {
+        for body in [
+            "{}",
+            r#"{"results":null}"#,
+            r#"{"results":[{}]}"#,
+            r#"{"results":[{"kind":"artwork"}]}"#,
+        ] {
+            assert!(parse_search(body).is_err());
+        }
+        for (key, href) in [
+            ("originals/../evil.jpg", "/artwork/one"),
+            ("other/a.jpg", "/artwork/one"),
+            ("originals/a.jpg", "https://evil.example/art"),
+        ] {
+            let body = serde_json::json!({"results":[{"kind":"artwork","id":"one","title":"Title","r2_key":key,"href":href}]}).to_string();
+            assert!(parse_search(&body).is_err());
+        }
+    }
+    #[test]
+    fn search_url_encodes_trimmed_unicode_and_reserved_characters() {
+        let query = " Édouard & café + #? ";
+        let url = search_url(query).unwrap();
+        assert_eq!(url.host_str(), Some("www.reframed.gallery"));
+        assert_eq!(url.path(), "/api/search/nav");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![("q".into(), query.trim().into())]
+        );
+        assert!(url.fragment().is_none());
+    }
+    #[test]
+    #[ignore = "contacts the live Reframed search endpoint"]
+    fn live_site_search() {
+        let hits = fetch_search("monet").unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(valid_artwork));
+        assert!(
+            fetch_search("zzzzzznonexistent123456789")
+                .unwrap()
+                .is_empty()
+        );
+    }
     fn flight(chunks: &[&str]) -> String {
         chunks
             .iter()
@@ -205,5 +339,23 @@ mod tests {
         let payload = format!("[{valid},{valid},{external},{traversal}]");
         assert_eq!(parse_catalogue(&flight(&[&payload])).unwrap().len(), 1);
         assert!(parse_catalogue("<html>no catalogue</html>").is_err());
+    }
+    #[test]
+    fn recognizes_only_structured_empty_catalogue() {
+        let empty =
+            r#"["$","div",null,{"className":"TileGrid-module__wREHvq__grid","children":[]}]"#;
+        assert!(parse_catalogue(&flight(&[empty])).unwrap().is_empty());
+        assert!(parse_catalogue(&flight(&[r#"{"children":[]}"#])).is_err());
+        let malformed = empty.replace("[]}", "[{}]}");
+        assert!(parse_catalogue(&flight(&[&malformed])).is_err());
+        assert!(parse_catalogue("self.__next_f.push([1,broken])").is_err());
+    }
+    #[test]
+    fn only_later_page_not_found_confirms_end() {
+        assert!(is_pagination_end(2, 404));
+        assert!(!is_pagination_end(1, 404));
+        assert!(!is_pagination_end(2, 500));
+        assert!(!is_pagination_end(2, 403));
+        assert!(!is_pagination_end(2, 429));
     }
 }

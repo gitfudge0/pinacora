@@ -26,7 +26,16 @@ fi
 python3 scripts/collect-licenses.py --target "$target"
 bundle=dist/Reframed.app
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/licenses"
-cp "${CARGO_TARGET_DIR:-target}/$target/$profile/reframed" "$bundle/Contents/MacOS/Reframed"
+# Publish a new inode: overwriting an executable from a previously signed bundle
+# can leave macOS enforcing its cached signature while verifying the new bytes.
+bundle_executable_temp=$(mktemp "$bundle/Contents/MacOS/.Reframed.XXXXXX")
+trap 'rm -f "$bundle_executable_temp"' 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cp -p "${CARGO_TARGET_DIR:-target}/$target/$profile/reframed" "$bundle_executable_temp"
+chmod +x "$bundle_executable_temp"
+mv -f "$bundle_executable_temp" "$bundle/Contents/MacOS/Reframed"
 cp resources/Info.plist "$bundle/Contents/Info.plist"
 cp resources/AppIcon.icns "$bundle/Contents/Resources/AppIcon.icns"
 cp -R dist/license-notices/. "$bundle/Contents/Resources/licenses/"

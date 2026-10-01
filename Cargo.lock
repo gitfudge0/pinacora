@@ -3748,14 +3748,17 @@ name = "reframed"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "gpui",
  "image",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "unicode-segmentation",
  "ureq",
  "url",
 ]
@@ -5036,6 +5039,12 @@ name = "unicode-script"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-vo"

@@ -21,11 +21,11 @@ The app is **ad-hoc signed and not notarized by Apple**. macOS may block the fir
 
 ## Browse, choose, apply
 
-- Browse horizontally scrolling shelves with artist and title beneath each thumbnail. The first artwork opens automatically in the large hero.
-- **Refresh** reloads the recent catalogue. **Load more** fetches the next page.
-- Click search to filter loaded artworks by title or artist. Backspace edits, **Command-A** selects the query, **Command-V** pastes, and **Escape** clears it.
+- A full-width cinematic preview sits above the vertical artwork grid. Selecting a card brings its artwork into view; **Back to results** restores your browsing position and search. Searching prioritizes matching results and hides unrelated previews.
+- **Refresh** reloads the recent catalogue while browsing, or reruns the current site search. **Load more artwork** fetches the next page without moving your browsing position. **Show new artwork** jumps to additions; failed pages can be retried in place.
+- Search Reframed by title or artist. Queries of at least two characters are sent to the site after a short pause. Results show the site’s top matching artworks, including matches beyond loaded pages; the search endpoint has no pagination. Clearing search restores the loaded recent catalogue. **Command-F** focuses search and brings results into view; standard editing, selection, clipboard, Unicode, and input methods are supported. **Escape** or **Clear** clears the query. Use **Tab/Shift-Tab** to move between controls and artwork, arrow keys to navigate the grid, and **Enter/Space** to activate. **Escape** returns from a selected preview to results; in search it clears the query.
 - **Set wallpaper** downloads and validates the original, then applies it through macOS to all currently connected displays. **View source** opens its gallery page with attribution.
-- **Motion on/off** controls all in-app animation, including artwork reveals, hover transitions, shelf navigation, and the walkthrough backdrop. The current GPUI version does not expose the system reduced-motion preference.
+- **Motion on/off** controls all in-app animation, including the walkthrough backdrop. The current GPUI version does not expose the system reduced-motion preference.
 - **Guide** replays the welcome walkthrough. Continue, Next, and Back are manual; Skip or Escape dismisses it. The walkthrough never changes your wallpaper.
 - **Command-Q** quits.
 
@@ -33,7 +33,7 @@ Other Spaces and disconnected displays are outside this version's wallpaper beha
 
 ## Source, artwork, and local storage
 
-The app reads public `/recent` pages and artwork structured metadata. It preserves Unicode titles and attribution, and downloads originals directly from the gallery CDN with ordinary browser headers. It does not use private APIs or the site's bot-protected download proxy. If access is blocked or the source format changes, it reports an error; it does not replace the original with a preview. Browsing previews are resized by the source.
+The app reads public `/recent` pages, the site’s `/api/search/nav` search endpoint, and artwork structured metadata. It preserves Unicode titles and attribution, and downloads originals directly from the gallery CDN with ordinary browser headers. It does not use private APIs or the site's bot-protected download proxy. If access is blocked or the source format changes, it reports an error; it does not replace the original with a preview. Browsing previews are resized by the source.
 
 | Data | Location |
 | --- | --- |
