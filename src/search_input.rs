@@ -492,7 +492,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), rgb(0xa5ada6).into())
+            (input.placeholder.clone(), rgb(0xa1a1aa).into())
         } else {
             (content, style.color)
         };
@@ -557,7 +557,7 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    rgb(0xd6e9da),
+                    rgb(0x0a84ff),
                 )),
             )
         } else {
@@ -573,7 +573,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba(0x98b8a866),
+                    rgba(0x0a84ff66),
                 )),
                 None,
             )
@@ -632,10 +632,19 @@ impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
+            .flex_none()
+            .items_center()
+            .h(px(36.))
+            .w_full()
+            .min_w_0()
             .key_context("TextInput")
             .id("editable-search")
             .tab_index(0)
             .track_focus(&self.focus_handle(cx))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(rgb(0x3a3a40))
+            .focus(|s| s.border_color(rgb(0x0a84ff)))
             .overflow_hidden()
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(|_, _: &TabNext, _, cx| {
@@ -664,15 +673,17 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(rgb(0x171819))
+            .bg(rgb(0x202023))
             .line_height(px(24.))
-            .text_size(px(13.))
+            .text_size(px(14.))
             .child(
                 div()
-                    .h(px(32.))
+                    .flex()
+                    .items_center()
+                    .h(px(24.))
                     .w_full()
-                    .p(px(4.))
-                    .bg(rgb(0x171819))
+                    .min_w_0()
+                    .px(px(12.))
                     .child(TextElement { input: cx.entity() }),
             )
     }
@@ -685,6 +696,13 @@ impl Focusable for TextInput {
 }
 
 pub fn bind_keys(cx: &mut App) {
+    let shortcut = |mac, linux| {
+        if cfg!(target_os = "macos") {
+            mac
+        } else {
+            linux
+        }
+    };
     cx.bind_keys([
         KeyBinding::new("tab", TabNext, Some("TextInput")),
         KeyBinding::new("shift-tab", TabPrevious, Some("TextInput")),
@@ -694,10 +712,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, Some("TextInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
         KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
-        KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
-        KeyBinding::new("cmd-v", Paste, Some("TextInput")),
-        KeyBinding::new("cmd-c", Copy, Some("TextInput")),
-        KeyBinding::new("cmd-x", Cut, Some("TextInput")),
+        KeyBinding::new(shortcut("cmd-a", "ctrl-a"), SelectAll, Some("TextInput")),
+        KeyBinding::new(shortcut("cmd-v", "ctrl-v"), Paste, Some("TextInput")),
+        KeyBinding::new(shortcut("cmd-c", "ctrl-c"), Copy, Some("TextInput")),
+        KeyBinding::new(shortcut("cmd-x", "ctrl-x"), Cut, Some("TextInput")),
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
         KeyBinding::new("cmd-left", Home, Some("TextInput")),

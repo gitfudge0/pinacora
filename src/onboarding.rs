@@ -21,8 +21,7 @@ struct Flag {
 }
 
 pub fn default_path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
-    Ok(PathBuf::from(home).join("Library/Application Support/Reframed/walkthrough.json"))
+    Ok(reframed::storage::data_dir()?.join("walkthrough.json"))
 }
 pub fn dismissed(path: &Path) -> Result<bool> {
     let file = match std::fs::File::open(path) {

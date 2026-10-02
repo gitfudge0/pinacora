@@ -17,12 +17,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        runner: [macos-15, macos-15-intel, ubuntu-24.04]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libxcb-composite0-dev libxcb-randr0-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-render0-dev libxcb-xkb-dev libssl-dev libvulkan-dev
       - name: Install pinned Rust toolchain and components
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
       - name: Check formatting
@@ -32,4 +35,8 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Build app bundle
+        if: runner.os == 'macOS'
         run: ./scripts/build-macos.sh
+      - name: Build Linux app
+        if: runner.os == 'Linux'
+        run: ./scripts/build-linux.sh

@@ -21,7 +21,15 @@ fn main() {
         set_application_icon();
         search_input::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys([KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-q"
+            } else {
+                "ctrl-q"
+            },
+            Quit,
+            None,
+        )]);
         cx.set_menus(vec![Menu {
             name: "Reframed".into(),
             items: vec![MenuItem::action("Quit Reframed", Quit)],
@@ -30,6 +38,8 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                #[cfg(target_os = "linux")]
+                app_id: Some("reframed".into()),
                 window_min_size: Some(size(px(940.), px(620.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::from("Reframed")),
@@ -38,7 +48,13 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(ui::Gallery::new),
+            |window, cx| {
+                #[cfg(target_os = "linux")]
+                window.set_window_title("Reframed");
+                #[cfg(not(target_os = "linux"))]
+                let _ = window;
+                cx.new(ui::Gallery::new)
+            },
         )
         .expect("Could not open Reframed window");
         cx.activate(true);

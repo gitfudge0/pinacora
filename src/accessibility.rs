@@ -22,6 +22,8 @@ pub struct AccessibilityNode {
     pub bounds: Bounds<Pixels>,
 }
 
+// Actions are constructed by the macOS native accessibility bridge.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub enum AccessibilityAction {
     Press(String),

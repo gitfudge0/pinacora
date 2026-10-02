@@ -2,6 +2,8 @@ use anyhow::Result;
 use std::path::Path;
 #[cfg(any(target_os = "macos", test))]
 mod all_desktops;
+#[cfg(target_os = "linux")]
+mod linux;
 
 pub fn all_desktops_supported() -> bool {
     #[cfg(target_os = "macos")]
@@ -58,7 +60,11 @@ pub fn apply(path: &Path) -> Result<usize> {
     }
     Ok(count)
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub fn apply(path: &Path) -> Result<usize> {
+    linux::apply(path)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn apply(_: &Path) -> Result<usize> {
     anyhow::bail!("Wallpaper support currently requires macOS")
 }

@@ -2,7 +2,7 @@
 
 # Reframed
 
-A native macOS wallpaper browser built with Rust and GPUI. Discover artwork from the live [Reframed gallery](https://www.reframed.gallery/), browse a cinematic dark workspace, and set an untouched, full resolution original on all Desktops on macOS 14 or newer.
+A native macOS and Linux wallpaper browser built with Rust and GPUI. Discover artwork from the live [Reframed gallery](https://www.reframed.gallery/), browse a cinematic dark workspace, and set an untouched, full resolution original on all Desktops on macOS 14 or newer.
 
 **Unofficial and independent:** this app is not affiliated with or endorsed by Reframed. Artwork belongs to its respective rights holders; no gallery artwork is bundled with the app.
 
@@ -19,13 +19,34 @@ Requires macOS 12 or newer and internet access for the live gallery. These are s
 
 Release archives are **self-signed with the gitfudge certificate and not notarized by Apple**. This certificate is not an Apple Developer ID certificate and does not remove Gatekeeper warnings. macOS may block the first launch. If you trust the release, attempt to open it, then use **System Settings → Privacy & Security → Open Anyway** (on macOS 12, **System Preferences → Security & Privacy → General**). If macOS reports that the app is damaged or contains malware, do not bypass that warning; report the problem with the release version and macOS version.
 
+## Linux
+
+Linux builds support Wayland and X11 with a Vulkan-capable graphics driver. Wallpaper application supports Hyprland with **hyprpaper 0.8 or newer** running with IPC enabled, and GNOME via `gsettings`. Other desktops can browse and download artwork but wallpaper application reports an unsupported desktop. Hyprland changes apply to every currently connected monitor for the current session; Reframed does not rewrite your hyprpaper configuration. GNOME updates light and dark background preferences.
+
+On Arch Linux install build dependencies and the desktop helper:
+
+```sh
+sudo pacman -S --needed base-devel pkgconf fontconfig freetype2 libxkbcommon libxkbcommon-x11 wayland libxcb vulkan-icd-loader openssl hyprpaper
+```
+
+Install the Vulkan driver appropriate to your GPU (`vulkan-intel`, `vulkan-radeon`, or the NVIDIA driver). Install Rust through rustup; this repository selects Rust 1.95.0. Start hyprpaper through your desktop session if it is not already running. See the [hyprpaper IPC documentation](https://wiki.hypr.land/hypr-ecosystem/user/hyprpaper/).
+
+```sh
+cargo run --locked
+./install.sh --debug
+```
+
+Installation builds the app and writes `~/.local/bin/reframed`, an application launcher, and an icon to your user data directory. Use `./install.sh` for an optimized release build, or `./scripts/build-linux.sh --debug` to build without installing. Launch Reframed from your application menu or `~/.local/bin/reframed`. Linux uses **Ctrl-F**, **Ctrl-Q**, and standard Ctrl clipboard shortcuts.
+
+Linux storage uses `$XDG_DATA_HOME/reframed/originals` and `$XDG_DATA_HOME/reframed/walkthrough.json` (default `~/.local/share/reframed`), and `$XDG_CACHE_HOME/reframed/previews` (default `~/.cache/reframed`). Empty or relative XDG values use the defaults. Keep originals in place while they are your wallpaper. Linux release archives are not yet published. The native screen-reader accessibility bridge currently supports macOS only; Linux retains keyboard navigation.
+
 ## Browse, choose, apply
 
 - A full-width cinematic preview sits above the vertical artwork grid. Selecting a card brings its artwork into view; **Back to results** restores your browsing position and search. Searching prioritizes matching results and hides unrelated previews.
 - **Refresh** reloads the recent catalogue while browsing, or reruns the current site search. **Load more artwork** fetches the next page without moving your browsing position. **Show new artwork** jumps to additions; failed pages can be retried in place.
 - Search Reframed by title or artist. Queries of at least two characters are sent to the site after a short pause. Results show the site’s top matching artworks, including matches beyond loaded pages; the search endpoint has no pagination. Clearing search restores the loaded recent catalogue. **Command-F** focuses search and brings results into view; standard editing, selection, clipboard, Unicode, and input methods are supported. **Escape** or **Clear** clears the query. Use **Tab/Shift-Tab** to move between controls and artwork, arrow keys to navigate the grid, and **Enter/Space** to activate. **Escape** returns from a selected preview to results; in search it clears the query.
 - **Set wallpaper** downloads and validates the original, then applies it to all Desktops on macOS 14 or newer. On macOS 12–13 it applies to connected displays in the current Desktop. **View source** opens its gallery page with attribution.
-- **Motion on/off** controls all in-app animation, including the walkthrough backdrop. The current GPUI version does not expose the system reduced-motion preference.
+- **Motion on/off** controls all in-app animation. Artwork fades and gently settles over 460 ms, with a short stagger for its title and actions. Hovering a card eases its image closer over 200 ms. Walkthrough steps fade and slide over 280 ms, and the welcome backdrop settles once over 700 ms. Nothing loops. The current GPUI version does not expose the system reduced-motion preference.
 - **Guide** replays the welcome walkthrough. Continue, Next, and Back are manual; Skip or Escape dismisses it. The walkthrough never changes your wallpaper.
 - **Command-Q** quits.
 

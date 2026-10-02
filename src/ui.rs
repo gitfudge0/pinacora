@@ -4,9 +4,9 @@ use crate::accessibility::{
 use crate::onboarding::{self, Outcome};
 use crate::search_input::{Changed, Navigate, TextInput};
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, Entity, FocusHandle, Focusable, FontWeight,
-    KeyDownEvent, ObjectFit, ScrollHandle, SharedString, Window, WindowControlArea, div, img,
-    linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, AnyElement, BoxShadow, Context, Entity, FocusHandle, Focusable,
+    FontWeight, KeyDownEvent, ObjectFit, ScrollHandle, SharedString, Window, WindowControlArea,
+    div, img, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
 };
 use reframed::catalogue::{Artwork, Detail};
 use std::cell::RefCell;
@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 fn app_icon(edge: f32) -> gpui::Img {
     static ICON: OnceLock<Arc<gpui::Image>> = OnceLock::new();
@@ -30,6 +30,26 @@ fn app_icon(edge: f32) -> gpui::Img {
     .w(px(edge))
     .h(px(edge))
     .object_fit(ObjectFit::Contain)
+}
+
+struct HoverMotion {
+    hovered: bool,
+    epoch: u64,
+    from: f32,
+    started: Instant,
+}
+
+fn eased(t: f32) -> f32 {
+    1. - (1. - t.clamp(0., 1.)).powi(3)
+}
+
+fn hover_scale(from: f32, hovered: bool, progress: f32) -> f32 {
+    let target = if hovered { 1.025 } else { 1. };
+    from + (target - from) * progress.clamp(0., 1.)
+}
+
+fn reveal_progress(t: f32, delay: f32) -> f32 {
+    eased((t - delay) / (1. - delay))
 }
 
 pub struct Gallery {
@@ -77,6 +97,8 @@ pub struct Gallery {
     hero_previews: HashMap<String, PathBuf>,
     hero_active: bool,
     motion_enabled: bool,
+    tile_motion: HashMap<String, HoverMotion>,
+    hover_epoch: u64,
 
     status_epoch: u64,
     hero_queued: Option<(Artwork, u64)>,
@@ -173,6 +195,8 @@ impl Gallery {
             hero_previews: HashMap::new(),
             hero_active: false,
             motion_enabled: true,
+            tile_motion: HashMap::new(),
+            hover_epoch: 0,
 
             status_epoch: 0,
             hero_queued: None,
@@ -539,6 +563,14 @@ impl Gallery {
                     Ok(()) => format!("Wallpaper set on all Desktops · {w} × {h}"),
                     Err(error) => format!("Could not apply wallpaper: {error}"),
                 }
+            } else if cfg!(target_os = "linux") {
+                let task = cx.background_executor().spawn(async move {
+                    reframed::platform::apply(&path).map_err(|error| format!("{error:#}"))
+                });
+                match task.await {
+                    Ok(n) => format!("Wallpaper applied · {n} display setting(s) · {w} × {h}"),
+                    Err(error) => format!("Could not apply wallpaper: {error}"),
+                }
             } else {
                 // AppKit requires the foreground/main thread on macOS 12–13.
                 match reframed::platform::apply(&path) {
@@ -568,7 +600,12 @@ impl Gallery {
         if self.intro_visible {
             return false;
         }
-        if e.keystroke.modifiers.platform && e.keystroke.key == "f" {
+        if (if cfg!(target_os = "macos") {
+            e.keystroke.modifiers.platform
+        } else {
+            e.keystroke.modifiers.control
+        }) && e.keystroke.key == "f"
+        {
             cx.stop_propagation();
             self.focus_results_after_layout = true;
             self.search_input.focus_handle(cx).focus(window);
@@ -727,22 +764,48 @@ impl Gallery {
             .tab_stop(enabled)
             .px_3()
             .py_2()
-            .rounded_md()
+            .rounded(px(10.))
             .bg(rgb(SURFACE))
+            .border_1()
+            .border_color(rgb(0x3a3a40))
+            .text_sm()
             .when(matches!(id, "motion-toggle" | "show-walkthrough"), |d| {
-                d.bg(rgba(0xffffff00)).text_xs().text_color(rgb(0xb4bcb5))
+                d.bg(rgba(0xffffff00))
+                    .border_color(rgba(0xffffff00))
+                    .text_xs()
+                    .text_color(rgb(MUTED))
             })
+            .when(
+                matches!(
+                    id,
+                    "motion-toggle" | "show-walkthrough" | "refresh" | "clear-search"
+                ),
+                |d| {
+                    d.h(px(36.))
+                        .py_0()
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .line_height(px(24.))
+                },
+            )
             .when(id == "apply", |d| {
                 d.px_5()
                     .py_3()
-                    .bg(rgb(TEXT))
-                    .text_color(rgb(CANVAS))
+                    .bg(rgb(ACCENT))
+                    .border_color(rgb(ACCENT))
+                    .text_color(rgb(TEXT))
                     .font_weight(FontWeight::MEDIUM)
             })
-            .text_sm()
-            .when(enabled, |d| d.cursor_pointer())
+            .when(enabled, |d| {
+                d.cursor_pointer()
+                    .hover(move |s| s.bg(rgb(if id == "apply" { 0x2994ff } else { RAISED })))
+                    .active(move |s| s.bg(rgb(if id == "apply" { 0x0068d1 } else { 0x36363c })))
+            })
             .opacity(if enabled { 1. } else { 0.4 })
-            .focus(|s| s.border_1().border_color(rgb(TEXT)))
+            .focus(|s| s.border_color(rgb(ACCENT)))
             .child(label)
             .child(self.semantic(
                 id.into(),
@@ -887,17 +950,38 @@ impl Gallery {
     }
 }
 
-const CANVAS: u32 = 0x090a0a;
-const SURFACE: u32 = 0x171819;
-const TEXT: u32 = 0xf4f4f0;
-const MUTED: u32 = 0x858986;
+const CANVAS: u32 = 0x111113;
+const SURFACE: u32 = 0x202023;
+const TEXT: u32 = 0xf5f5f7;
+const MUTED: u32 = 0xa1a1aa;
+const ACCENT: u32 = 0x0a84ff;
+const RAISED: u32 = 0x2b2b30;
 
 impl Gallery {
+    fn reveal(&self, element: gpui::Div, group: &'static str, delay: f32) -> AnyElement {
+        if !self.motion_enabled {
+            return element.into_any_element();
+        }
+        element
+            .with_animation(
+                SharedString::from(format!("{group}-{}", self.selection_epoch)),
+                Animation::new(Duration::from_millis(360)),
+                move |element, t| {
+                    let progress = reveal_progress(t, delay);
+                    element
+                        .opacity(progress)
+                        .relative()
+                        .top(px(8. * (1. - progress)))
+                },
+            )
+            .into_any_element()
+    }
+
     fn header(&self, cx: &Context<Self>) -> AnyElement {
         div()
             .h(px(72.))
             .flex_none()
-            .pl(px(100.))
+            .pl(px(if cfg!(target_os = "macos") { 100. } else { 24. }))
             .pr_6()
             .flex()
             .items_center()
@@ -948,9 +1032,7 @@ impl Gallery {
             .child(
                 div()
                     .w(px(218.))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(0x393d3a))
+                    .rounded(px(10.))
                     .overflow_hidden()
                     .relative()
                     .child(self.search_input.clone())
@@ -974,7 +1056,8 @@ impl Gallery {
             .selected
             .as_ref()
             .and_then(|id| self.all_artworks().find(|a| &a.id == id));
-        let height = (f32::from(window.viewport_size().width) * 0.375).clamp(405., 520.);
+        let image_width = f32::from(window.viewport_size().width);
+        let height = (image_width * 0.375).clamp(405., 520.);
         let mut view = div()
             .relative()
             .w_full()
@@ -988,29 +1071,54 @@ impl Gallery {
                 .get(&art.id)
                 .or_else(|| self.previews.get(&art.id).and_then(|p| p.as_ref().ok()));
             if let Some(path) = picture {
-                view = view.child(
-                    img(path.clone())
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .object_fit(ObjectFit::Cover),
-                );
+                let image = img(path.clone())
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(image_width))
+                    .h(px(height))
+                    .object_fit(ObjectFit::Cover);
+                let image = if self.motion_enabled {
+                    image
+                        .with_animation(
+                            SharedString::from(format!(
+                                "hero-{}-{}-{}",
+                                self.selection_epoch,
+                                art.id,
+                                path.display()
+                            )),
+                            Animation::new(Duration::from_millis(460)).with_easing(eased),
+                            move |image, t| {
+                                let scale = 1. + 0.035 * (1. - t);
+                                image
+                                    .opacity(t)
+                                    .w(px(image_width * scale))
+                                    .h(px(height * scale))
+                                    .left(px(image_width * (1. - scale) * 0.5))
+                                    .top(px(height * (1. - scale) * 0.5))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    image.into_any_element()
+                };
+                view = view.child(image);
             }
             view = view
                 .child(div().absolute().inset_0().bg(linear_gradient(
                     90.,
-                    linear_color_stop(rgba(0x090a0aee), 0.),
-                    linear_color_stop(rgba(0x090a0a00), 0.82),
+                    linear_color_stop(rgba(0x111113ee), 0.),
+                    linear_color_stop(rgba(0x11111300), 0.82),
                 )))
                 .child(div().absolute().inset_0().bg(linear_gradient(
                     180.,
-                    linear_color_stop(rgba(0x090a0a88), 0.),
-                    linear_color_stop(rgba(0x090a0a00), 0.3),
+                    linear_color_stop(rgba(0x11111388), 0.),
+                    linear_color_stop(rgba(0x11111300), 0.3),
                 )))
                 .child(div().absolute().inset_0().bg(linear_gradient(
                     180.,
-                    linear_color_stop(rgba(0x090a0a00), 0.35),
-                    linear_color_stop(rgba(0x090a0aff), 0.92),
+                    linear_color_stop(rgba(0x11111300), 0.35),
+                    linear_color_stop(rgba(0x111113ff), 0.92),
                 )));
             let title = self
                 .detail
@@ -1047,91 +1155,97 @@ impl Gallery {
                         false,
                     ))
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex_none()
-                                    .text_size(px(36.))
-                                    .line_height(px(42.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .line_clamp(2)
-                                    .child(title.clone())
-                                    .child(self.semantic(
-                                        "selected-title".into(),
-                                        title,
-                                        AccessibilityRole::StaticText,
-                                        String::new(),
-                                        true,
-                                        false,
-                                        false,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex_none()
-                                    .w_full()
-                                    .min_h(px(26.))
-                                    .text_lg()
-                                    .line_clamp(2)
-                                    .text_color(rgb(0xd1d5d0))
-                                    .child(artist.clone())
-                                    .child(self.semantic(
-                                        "selected-artist".into(),
-                                        artist,
-                                        AccessibilityRole::StaticText,
-                                        String::new(),
-                                        true,
-                                        false,
-                                        false,
-                                    )),
-                            )
-                            .when_some(
-                                self.detail.as_ref().and_then(|d| d.dimensions.clone()),
-                                |d, dimensions| {
-                                    d.child(self.text("selected-dimensions", dimensions))
-                                },
-                            )
-                            .when(picture.is_none(), |d| {
-                                d.child(self.text(
-                                    "preview-status",
-                                    if failed {
-                                        "Preview unavailable"
-                                    } else {
-                                        "Loading preview…"
-                                    },
-                                ))
-                            })
-                            .when(failed, |d| {
-                                d.child(self.button(
-                                    "retry-preview",
-                                    "Retry preview",
-                                    !self.applying,
-                                    cx,
-                                ))
-                            })
-                            .when(self.detail_loading, |d| {
-                                d.child(self.text("detail-progress", "Loading artwork details…"))
-                            })
-                            .when_some(self.detail_error.clone(), |d, error| {
-                                d.child(
+                        self.reveal(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_3()
+                                .child(
                                     div()
-                                        .id("detail-error-scroll")
-                                        .max_h(px(62.))
-                                        .overflow_y_scroll()
-                                        .child(self.text("detail-error", error)),
+                                        .relative()
+                                        .flex_none()
+                                        .text_size(px(36.))
+                                        .line_height(px(42.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .line_clamp(2)
+                                        .child(title.clone())
+                                        .child(self.semantic(
+                                            "selected-title".into(),
+                                            title,
+                                            AccessibilityRole::StaticText,
+                                            String::new(),
+                                            true,
+                                            false,
+                                            false,
+                                        )),
                                 )
-                                .child(self.button(
-                                    "retry-details",
-                                    "Retry details",
-                                    !self.applying,
-                                    cx,
-                                ))
-                            }),
+                                .child(
+                                    div()
+                                        .relative()
+                                        .flex_none()
+                                        .w_full()
+                                        .min_h(px(26.))
+                                        .text_lg()
+                                        .line_clamp(2)
+                                        .text_color(rgb(0xd1d1d6))
+                                        .child(artist.clone())
+                                        .child(self.semantic(
+                                            "selected-artist".into(),
+                                            artist,
+                                            AccessibilityRole::StaticText,
+                                            String::new(),
+                                            true,
+                                            false,
+                                            false,
+                                        )),
+                                )
+                                .when_some(
+                                    self.detail.as_ref().and_then(|d| d.dimensions.clone()),
+                                    |d, dimensions| {
+                                        d.child(self.text("selected-dimensions", dimensions))
+                                    },
+                                )
+                                .when(picture.is_none(), |d| {
+                                    d.child(self.text(
+                                        "preview-status",
+                                        if failed {
+                                            "Preview unavailable"
+                                        } else {
+                                            "Loading preview…"
+                                        },
+                                    ))
+                                })
+                                .when(failed, |d| {
+                                    d.child(self.button(
+                                        "retry-preview",
+                                        "Retry preview",
+                                        !self.applying,
+                                        cx,
+                                    ))
+                                })
+                                .when(self.detail_loading, |d| {
+                                    d.child(
+                                        self.text("detail-progress", "Loading artwork details…"),
+                                    )
+                                })
+                                .when_some(self.detail_error.clone(), |d, error| {
+                                    d.child(
+                                        div()
+                                            .id("detail-error-scroll")
+                                            .max_h(px(62.))
+                                            .overflow_y_scroll()
+                                            .child(self.text("detail-error", error)),
+                                    )
+                                    .child(self.button(
+                                        "retry-details",
+                                        "Retry details",
+                                        !self.applying,
+                                        cx,
+                                    ))
+                                }),
+                            "hero-metadata",
+                            0.,
+                        ),
                     ),
             );
             view = view.child(
@@ -1144,28 +1258,32 @@ impl Gallery {
                     .flex_col()
                     .gap_3()
                     .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(self.button(
-                                "apply",
-                                if self.downloading {
-                                    "Downloading…"
-                                } else if self.applying {
-                                    "Applying…"
-                                } else {
-                                    "Set wallpaper"
-                                },
-                                self.detail.is_some()
-                                    && !self.applying
-                                    && !(!self.searching()
-                                        && self.loading
-                                        && self.last_load_refresh),
-                                cx,
-                            ))
-                            .child(self.button("view-source", "View source", true, cx)),
+                        self.reveal(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(self.button(
+                                    "apply",
+                                    if self.downloading {
+                                        "Downloading…"
+                                    } else if self.applying {
+                                        "Applying…"
+                                    } else {
+                                        "Set wallpaper"
+                                    },
+                                    self.detail.is_some()
+                                        && !self.applying
+                                        && !(!self.searching()
+                                            && self.loading
+                                            && self.last_load_refresh),
+                                    cx,
+                                ))
+                                .child(self.button("view-source", "View source", true, cx)),
+                            "hero-actions",
+                            0.16,
+                        ),
                     )
-                    .child(div().text_xs().text_color(rgb(0xb2bbb2)).child(self.text(
+                    .child(div().text_xs().text_color(rgb(0xa1a1aa)).child(self.text(
                         "display-scope",
                         if reframed::platform::all_desktops_supported() {
                             "Untouched original · All Desktops"
@@ -1179,7 +1297,7 @@ impl Gallery {
                                 .id("apply-status-scroll")
                                 .h(px(56.))
                                 .text_sm()
-                                .text_color(rgb(0xc3d4c5))
+                                .text_color(rgb(0xd1d1d6))
                                 .overflow_y_scroll()
                                 .child(self.text("apply-status", self.status.clone())),
                         )
@@ -1229,10 +1347,39 @@ impl Gallery {
     fn tile(&self, art: Artwork, width: f32, cx: &Context<Self>) -> AnyElement {
         let selected = self.selected.as_ref() == Some(&art.id);
         let picture = match self.previews.get(&art.id) {
-            Some(Ok(path)) => img(path.clone())
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .into_any_element(),
+            Some(Ok(path)) => {
+                let image_width = width - 10.;
+                let image_height = image_width * 9. / 16.;
+                let image = img(path.clone())
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(image_width))
+                    .h(px(image_height))
+                    .object_fit(ObjectFit::Cover);
+                if self.motion_enabled
+                    && let Some(motion) = self.tile_motion.get(&art.id)
+                {
+                    let from = motion.from;
+                    let hovered = motion.hovered;
+                    image
+                        .with_animation(
+                            SharedString::from(format!("tile-hover-{}-{}", art.id, motion.epoch)),
+                            Animation::new(Duration::from_millis(200)).with_easing(eased),
+                            move |image, t| {
+                                let scale = hover_scale(from, hovered, t);
+                                image
+                                    .w(px(image_width * scale))
+                                    .h(px(image_height * scale))
+                                    .left(px(image_width * (1. - scale) * 0.5))
+                                    .top(px(image_height * (1. - scale) * 0.5))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    image.into_any_element()
+                }
+            }
             Some(Err(_)) => div()
                 .p_3()
                 .text_xs()
@@ -1248,6 +1395,7 @@ impl Gallery {
         };
         let click = art.clone();
         let keyart = art.clone();
+        let hover_id = art.id.clone();
         div()
             .relative()
             .id(SharedString::from(format!("tile-{}", art.id)))
@@ -1269,21 +1417,72 @@ impl Gallery {
             .flex_col()
             .gap_2()
             .p_1()
-            .rounded_lg()
+            .rounded(px(12.))
             .cursor_pointer()
             .border_1()
             .border_color(if selected {
-                rgb(TEXT)
+                rgb(ACCENT)
             } else {
                 rgba(0xffffff00)
             })
-            .focus(|s| s.border_color(rgb(0x98b8a8)))
-            .hover(|s| s.bg(rgb(SURFACE)))
+            .focus(|s| s.border_color(rgb(ACCENT)))
+            .bg(if selected {
+                rgb(SURFACE)
+            } else {
+                rgba(0xffffff00)
+            })
+            .hover(move |s| {
+                s.bg(rgb(RAISED))
+                    .border_color(if selected {
+                        rgb(ACCENT)
+                    } else {
+                        rgba(0xffffff38)
+                    })
+                    .shadow(vec![BoxShadow {
+                        color: rgba(0x00000055).into(),
+                        offset: point(px(0.), px(4.)),
+                        blur_radius: px(12.),
+                        spread_radius: px(0.),
+                    }])
+            })
+            .active(|s| s.bg(rgb(0x36363c)))
+            .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
+                if app
+                    .tile_motion
+                    .get(&hover_id)
+                    .is_some_and(|motion| motion.hovered == *hovered)
+                {
+                    return;
+                }
+                let from = app
+                    .tile_motion
+                    .get(&hover_id)
+                    .map(|motion| {
+                        hover_scale(
+                            motion.from,
+                            motion.hovered,
+                            eased(motion.started.elapsed().as_secs_f32() / 0.2),
+                        )
+                    })
+                    .unwrap_or(1.);
+                app.hover_epoch += 1;
+                app.tile_motion.insert(
+                    hover_id.clone(),
+                    HoverMotion {
+                        hovered: *hovered,
+                        epoch: app.hover_epoch,
+                        from,
+                        started: Instant::now(),
+                    },
+                );
+                cx.notify();
+            }))
             .child(
                 div()
+                    .relative()
                     .w_full()
                     .h(px((width - 10.) * 9. / 16.))
-                    .rounded_md()
+                    .rounded(px(10.))
                     .overflow_hidden()
                     .bg(rgb(SURFACE))
                     .child(picture),
@@ -1291,7 +1490,8 @@ impl Gallery {
             .child(
                 div()
                     .text_sm()
-                    .line_height(px(19.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight::MEDIUM)
                     .line_clamp(2)
                     .child(art.title().to_owned()),
             )
@@ -1419,6 +1619,8 @@ impl Gallery {
                 "Make it yours",
                 if reframed::platform::all_desktops_supported() {
                     "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to all Desktops."
+                } else if cfg!(target_os = "linux") {
+                    "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it through Hyprland with hyprpaper or GNOME. Hyprland changes last for the current session."
                 } else {
                     "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to connected displays in your current Desktop. All Desktops requires macOS 14 or newer."
                 },
@@ -1446,16 +1648,15 @@ impl Gallery {
                 image
                     .with_animation(
                         SharedString::from(format!("intro-backdrop-{}", self.intro_backdrop_epoch)),
-                        Animation::new(Duration::from_secs(24)).repeat(),
-                        move |image, delta| {
-                            let phase = std::f32::consts::TAU * delta;
-                            let scale = 1.0525 + 0.0125 * phase.sin();
-                            let drift = 8f32.min((width.min(height) * 0.02 - 1.).max(0.));
+                        Animation::new(Duration::from_millis(700))
+                            .with_easing(|t| 1. - (1. - t).powi(3)),
+                        move |image, t| {
+                            let scale = 1.025 + 0.025 * (1. - t);
                             image
                                 .w(px(width * scale))
                                 .h(px(height * scale))
-                                .left(px((width - width * scale) * 0.5 + drift * phase.sin()))
-                                .top(px((height - height * scale) * 0.5 + drift * phase.cos()))
+                                .left(px((width - width * scale) * 0.5))
+                                .top(px((height - height * scale) * 0.5))
                         },
                     )
                     .into_any_element()
@@ -1488,11 +1689,22 @@ impl Gallery {
             .flex()
             .flex_col()
             .gap_5()
-            .children((self.intro_step == 0).then(|| app_icon(88.)))
+            .children((self.intro_step == 0).then(|| {
+                div()
+                    .size(px(88.))
+                    .rounded(px(22.))
+                    .shadow(vec![BoxShadow {
+                        color: rgba(0x0a84ff26).into(),
+                        offset: point(px(0.), px(4.)),
+                        blur_radius: px(36.),
+                        spread_radius: px(3.),
+                    }])
+                    .child(app_icon(88.))
+            }))
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0xa8b2a9))
+                    .text_color(rgb(0xa1a1aa))
                     .child(if self.intro_step == 0 {
                         "WELCOME".to_owned()
                     } else {
@@ -1504,19 +1716,14 @@ impl Gallery {
                 div()
                     .text_lg()
                     .line_height(px(28.))
-                    .text_color(rgb(0xc3ccc4))
+                    .text_color(rgb(0xd1d1d6))
                     .child(self.text("intro-description", description)),
             );
         let copy = if self.motion_enabled {
             copy.with_animation(
                 SharedString::from(format!("intro-step-{}", self.intro_epoch)),
-                Animation::new(Duration::from_millis(if self.intro_step == 0 {
-                    700
-                } else {
-                    320
-                }))
-                .with_easing(|t| 1. - (1. - t).powi(3)),
-                |e, t| e.opacity(t).relative().top(px(12. * (1. - t))),
+                Animation::new(Duration::from_millis(280)).with_easing(|t| 1. - (1. - t).powi(3)),
+                |e, t| e.opacity(t).relative().top(px(8. * (1. - t))),
             )
             .into_any_element()
         } else {
@@ -1535,8 +1742,8 @@ impl Gallery {
             .children(background)
             .child(div().absolute().inset_0().bg(linear_gradient(
                 90.,
-                linear_color_stop(rgba(0x090a0ae6), 0.),
-                linear_color_stop(rgba(0x090a0a99), 1.),
+                linear_color_stop(rgba(0x111113e6), 0.),
+                linear_color_stop(rgba(0x11111399), 1.),
             )))
             .child(
                 div()
@@ -1579,8 +1786,14 @@ impl Gallery {
                             ))
                             .px_3()
                             .py_2()
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(rgba(0xffffff00))
+                            .focus(|s| s.border_color(rgb(ACCENT)))
+                            .hover(|s| s.bg(rgb(RAISED)))
+                            .active(|s| s.bg(rgb(SURFACE)))
                             .text_xs()
-                            .text_color(rgb(0xa8b2a9))
+                            .text_color(rgb(0xa1a1aa))
                             .cursor_pointer()
                             .child(if self.motion_enabled {
                                 "Motion on"
@@ -1622,8 +1835,12 @@ impl Gallery {
                             ))
                             .px_3()
                             .py_2()
-                            .rounded_md()
-                            .bg(rgba(0xffffff14))
+                            .rounded(px(10.))
+                            .bg(rgb(SURFACE))
+                            .border_1()
+                            .border_color(rgb(0x3a3a40))
+                            .focus(|s| s.border_color(rgb(ACCENT)))
+                            .active(|s| s.bg(rgb(0x36363c)))
                             .text_sm()
                             .cursor_pointer()
                             .hover(|s| s.bg(rgba(0xffffff28)))
@@ -1650,6 +1867,17 @@ impl Gallery {
                             .flex_col()
                             .gap_8()
                             .child(copy)
+                            .child(div().flex().gap_2().children((0..4).map(|step| {
+                                div()
+                                    .w(px(if step == self.intro_step { 22. } else { 6. }))
+                                    .h(px(6.))
+                                    .rounded(px(3.))
+                                    .bg(if step == self.intro_step {
+                                        rgb(ACCENT)
+                                    } else {
+                                        rgb(0x505057)
+                                    })
+                            })))
                             .child(
                                 div()
                                     .flex()
@@ -1698,7 +1926,12 @@ impl Gallery {
                                             ))
                                             .px_4()
                                             .py_3()
-                                            .rounded_md()
+                                            .rounded(px(10.))
+                                            .border_1()
+                                            .border_color(rgba(0xffffff00))
+                                            .focus(|s| s.border_color(rgb(ACCENT)))
+                                            .hover(|s| s.bg(rgb(RAISED)))
+                                            .active(|s| s.bg(rgb(SURFACE)))
                                             .text_sm()
                                             .cursor_pointer()
                                             .opacity(if self.intro_step > 0 { 1. } else { 0. })
@@ -1749,9 +1982,14 @@ impl Gallery {
                                             ))
                                             .px_5()
                                             .py_3()
-                                            .rounded_md()
-                                            .bg(rgb(TEXT))
-                                            .text_color(rgb(CANVAS))
+                                            .rounded(px(10.))
+                                            .bg(rgb(ACCENT))
+                                            .border_1()
+                                            .border_color(rgb(ACCENT))
+                                            .focus(|s| s.border_color(rgb(TEXT)))
+                                            .hover(|s| s.bg(rgb(0x2994ff)))
+                                            .active(|s| s.bg(rgb(0x0068d1)))
+                                            .text_color(rgb(TEXT))
                                             .text_sm()
                                             .font_weight(FontWeight::MEDIUM)
                                             .cursor_pointer()
@@ -1770,7 +2008,7 @@ impl Gallery {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(rgb(0x858f86))
+                                    .text_color(rgb(0xa1a1aa))
                                     .child("Escape to skip · Enter to continue"),
                             ),
                     ),
@@ -2036,7 +2274,7 @@ impl Render for Gallery {
                             .top(px(72.))
                             .max_h(px(88.))
                             .overflow_y_scroll()
-                            .bg(rgba(0x090a0ae8))
+                            .bg(rgba(0x111113e8))
                             .px_6()
                             .py_2()
                             .flex()
@@ -2099,7 +2337,6 @@ impl Render for Gallery {
                     .left_0()
                     .right_0()
                     .h(px(72.))
-                    .bg(rgba(0x090a0a99))
                     .child(self.header(cx)),
             )
             .when(self.intro_visible, |d| d.child(self.intro(window, cx)))
@@ -2262,6 +2499,23 @@ mod tests {
             alt: "Café scene".into(),
             href: "/art/one".into(),
         }
+    }
+    #[test]
+    fn hover_reversal_starts_at_the_current_scale() {
+        let entering = hover_scale(1., true, eased(0.4));
+        assert_eq!(hover_scale(entering, false, 0.), entering);
+        assert_eq!(hover_scale(entering, false, 1.), 1.);
+        assert_eq!(hover_scale(1., true, 1.), 1.025);
+        assert!(entering > 1. && entering < 1.025);
+    }
+    #[test]
+    fn delayed_reveal_stays_bounded_and_finishes() {
+        assert_eq!(reveal_progress(0., 0.16), 0.);
+        assert_eq!(reveal_progress(0.1, 0.16), 0.);
+        assert_eq!(reveal_progress(1., 0.16), 1.);
+        assert!(reveal_progress(0.5, 0.16) > 0.);
+        assert_eq!(eased(-0.5), 0.);
+        assert_eq!(eased(1.5), 1.);
     }
     #[test]
     fn duplicate_page_does_not_remove_items_or_selection() {

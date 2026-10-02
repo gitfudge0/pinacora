@@ -2,7 +2,11 @@
 set -eu
 
 cd "$(dirname "$0")"
-[ "$(uname -s)" = Darwin ] || { echo 'Local installation requires macOS.' >&2; exit 1; }
+case "$(uname -s)" in
+  Linux) exec ./scripts/install-linux.sh "$@" ;;
+  Darwin) ;;
+  *) echo 'Local installation supports macOS and Linux.' >&2; exit 1 ;;
+esac
 [ -d /Applications ] && [ -w /Applications ] || {
   echo '/Applications must be writable by the current user.' >&2
   exit 1

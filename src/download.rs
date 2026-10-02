@@ -18,12 +18,11 @@ pub fn validate_url(raw: &str) -> Result<()> {
     Ok(())
 }
 pub fn cache_dir(original: bool) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
-    let path = PathBuf::from(home).join(if original {
-        "Library/Application Support/Reframed/originals"
+    let path = if original {
+        crate::storage::data_dir()?.join("originals")
     } else {
-        "Library/Caches/Reframed/previews"
-    });
+        crate::storage::cache_dir()?.join("previews")
+    };
     std::fs::create_dir_all(&path)?;
     Ok(path)
 }
