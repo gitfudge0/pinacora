@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — Pinacora
 
 - Rename the app to Pinacora, with updated launcher and transparent in-app artwork icons.
 - Use Pinacora packaging and new-install storage names while retaining existing Reframed storage directories in place to preserve downloaded originals and walkthrough preferences.
+
+- Simplify first launch to a single welcome screen.
+- Add a prebuilt Linux x86_64 release with a local installer and application launcher icon.
 
 ## 0.2.0 — Gallery search and all Desktops
 

@@ -1,0 +1,15 @@
+{
+  "name": "xim-ctext",
+  "version": "0.3.0",
+  "repository": "https://github.com/Riey/xim-rs",
+  "revision": "65f77e44524ba487285a63aac4080faf2c05b4ed",
+  "revision_source": "published crate .cargo_vcs_info.json",
+  "files": [
+    {
+      "file": "LICENSE",
+      "url": "https://raw.githubusercontent.com/Riey/xim-rs/65f77e44524ba487285a63aac4080faf2c05b4ed/LICENSE",
+      "kind": "upstream license at published crate revision",
+      "sha256": "efa1224931b98468f5005f77285457f8d2eab0a77a15941aa10abbab1ae9a74e"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-name: Release Pinacora macOS app
+name: Release Pinacora
 
 on:
   release:
@@ -97,19 +97,40 @@ jobs:
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: macos-${{ matrix.arch }}
+          name: release-macos-${{ matrix.arch }}
+          path: dist/releases/*
+          if-no-files-found: error
+          retention-days: 7
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libxcb-composite0-dev libxcb-randr0-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-render0-dev libxcb-xkb-dev libssl-dev libvulkan-dev
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Package Linux app
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: ./scripts/package-linux-release.sh "$RELEASE_TAG"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-linux-x86_64
           path: dist/releases/*
           if-no-files-found: error
           retention-days: 7
   publish:
-    needs: build
+    needs: [build, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: macos-*
+          pattern: release-*
           path: release-assets
           merge-multiple: true
       - name: Verify checksums and upload release assets
@@ -120,4 +141,4 @@ jobs:
         run: |
           cd release-assets
           sha256sum --check *.sha256
-          gh release upload "$RELEASE_TAG" ./*.zip ./*.sha256 --clobber
+          gh release upload "$RELEASE_TAG" ./* --clobber

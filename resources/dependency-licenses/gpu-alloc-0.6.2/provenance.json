@@ -1,0 +1,21 @@
+{
+  "name": "gpu-alloc",
+  "version": "0.6.2",
+  "repository": "https://github.com/zakarumych/gpu-alloc",
+  "revision": "61020bdcb4eb04fca6bbf748aeb9570e859236e0",
+  "revision_source": "published crate .cargo_vcs_info.json",
+  "files": [
+    {
+      "file": "license/MIT",
+      "url": "https://raw.githubusercontent.com/zakarumych/gpu-alloc/61020bdcb4eb04fca6bbf748aeb9570e859236e0/license/MIT",
+      "kind": "upstream license at published crate revision",
+      "sha256": "f774bf68151714985324d90adbd59e8f271b7ba518608d871b6ba16464692879"
+    },
+    {
+      "file": "license/APACHE",
+      "url": "https://raw.githubusercontent.com/zakarumych/gpu-alloc/61020bdcb4eb04fca6bbf748aeb9570e859236e0/license/APACHE",
+      "kind": "upstream license at published crate revision",
+      "sha256": "58317934bf818c379e4215fad7e8dfb6812edff32c9557b8b039343f69711e08"
+    }
+  ]
+}

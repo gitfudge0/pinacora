@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect actual license texts for the locked macOS dependency graph.
+"""Collect actual license texts for the locked platform dependency graph.
 
 No network fallback during builds: missing package texts fail packaging.
 Checked-in supplements distinguish upstream texts, canonical SPDX texts,
@@ -105,7 +105,7 @@ def collect(target, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", required=True, choices=("aarch64-apple-darwin", "x86_64-apple-darwin"))
+    parser.add_argument("--target", required=True, choices=("aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"))
     arguments = parser.parse_args()
     output = Path(__file__).resolve().parent.parent / "dist" / "license-notices"
     try:
