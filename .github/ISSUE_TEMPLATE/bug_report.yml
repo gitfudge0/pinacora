@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem in Reframed.
+description: Report a reproducible problem in Pinacora.
 body:
   - type: markdown
     attributes:

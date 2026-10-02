@@ -26,24 +26,24 @@ else
   cargo build --locked --target "$target"
 fi
 python3 scripts/collect-licenses.py --target "$target"
-bundle=dist/Reframed.app
+bundle=dist/Pinacora.app
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/licenses"
 # Publish a new inode: overwriting an executable from a previously signed bundle
 # can leave macOS enforcing its cached signature while verifying the new bytes.
-bundle_executable_temp=$(mktemp "$bundle/Contents/MacOS/.Reframed.XXXXXX")
+bundle_executable_temp=$(mktemp "$bundle/Contents/MacOS/.Pinacora.XXXXXX")
 trap 'rm -f "$bundle_executable_temp"' 0
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-cp -p "${CARGO_TARGET_DIR:-target}/$target/$profile/reframed" "$bundle_executable_temp"
+cp -p "${CARGO_TARGET_DIR:-target}/$target/$profile/pinacora" "$bundle_executable_temp"
 chmod +x "$bundle_executable_temp"
-mv -f "$bundle_executable_temp" "$bundle/Contents/MacOS/Reframed"
+mv -f "$bundle_executable_temp" "$bundle/Contents/MacOS/Pinacora"
 cp resources/Info.plist "$bundle/Contents/Info.plist"
 cp resources/AppIcon.icns "$bundle/Contents/Resources/AppIcon.icns"
 cp -R dist/license-notices/. "$bundle/Contents/Resources/licenses/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$bundle/Contents/Resources/licenses/"
 plutil -lint "$bundle/Contents/Info.plist"
-lipo "$bundle/Contents/MacOS/Reframed" -verify_arch "$arch"
+lipo "$bundle/Contents/MacOS/Pinacora" -verify_arch "$arch"
 codesign --force --sign "$signing_identity" "$bundle"
 codesign --verify --strict --verbose=2 "$bundle"
 printf 'Built %s\n' "$bundle"

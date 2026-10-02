@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Reframed's issues, pull requests, and other project spaces should be welcoming and useful to everyone.
+Pinacora's issues, pull requests, and other project spaces should be welcoming and useful to everyone.
 
 Be respectful, assume good intent where reasonable, and keep criticism focused on ideas and behavior. Explain disagreements constructively. Respect people's privacy, identities, experience levels, and accessibility needs.
 

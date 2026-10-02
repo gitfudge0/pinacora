@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn html_is_not_accepted_as_wallpaper() {
         let path =
-            std::env::temp_dir().join(format!("reframed-invalid-image-{}", std::process::id()));
+            std::env::temp_dir().join(format!("pinacora-invalid-image-{}", std::process::id()));
         std::fs::write(&path, b"<html>Access denied</html>").unwrap();
         let result = dimensions(&path);
         let _ = std::fs::remove_file(path);

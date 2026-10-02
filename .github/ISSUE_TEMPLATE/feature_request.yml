@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement to Reframed.
+description: Suggest an improvement to Pinacora.
 body:
   - type: textarea
     id: need

@@ -8,7 +8,7 @@ use gpui::{
     FontWeight, KeyDownEvent, ObjectFit, ScrollHandle, SharedString, Window, WindowControlArea,
     div, img, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
 };
-use reframed::catalogue::{Artwork, Detail};
+use pinacora::catalogue::{Artwork, Detail};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -23,7 +23,7 @@ fn app_icon(edge: f32) -> gpui::Img {
         .get_or_init(|| {
             Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
-                include_bytes!("../resources/app-icon.png").to_vec(),
+                include_bytes!("../resources/pinacora-mark.png").to_vec(),
             ))
         })
         .clone())
@@ -103,9 +103,6 @@ pub struct Gallery {
     status_epoch: u64,
     hero_queued: Option<(Artwork, u64)>,
     intro_visible: bool,
-    intro_step: usize,
-    intro_epoch: u64,
-    intro_backdrop_epoch: u64,
     intro_focus: FocusHandle,
     intro_save_error: Option<String>,
 }
@@ -143,9 +140,7 @@ impl Gallery {
             "retry-preview",
             "gallery-source",
             "intro-motion",
-            "intro-skip",
-            "intro-back",
-            "intro-next",
+            "intro-start",
         ]
         .into_iter()
         .map(|id| (id.to_owned(), cx.focus_handle().tab_stop(true)))
@@ -201,9 +196,6 @@ impl Gallery {
             status_epoch: 0,
             hero_queued: None,
             intro_visible,
-            intro_step: 0,
-            intro_epoch: 0,
-            intro_backdrop_epoch: 0,
             intro_focus: cx.focus_handle(),
             intro_save_error: None,
         };
@@ -214,11 +206,8 @@ impl Gallery {
         if self.applying {
             return;
         }
-        self.intro_step = 0;
-        self.intro_epoch += 1;
-        self.intro_backdrop_epoch += 1;
         self.intro_visible = true;
-        self.intro_focus.focus(window);
+        self.controls["intro-start"].focus(window);
         cx.notify();
     }
     fn close_intro(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
@@ -229,29 +218,12 @@ impl Gallery {
         self.intro_visible = false;
         cx.notify();
     }
-    fn intro_next(&mut self, cx: &mut Context<Self>) {
-        if self.intro_step >= 3 {
-            self.close_intro(Outcome::Completed, cx);
-        } else {
-            self.intro_step += 1;
-            self.intro_epoch += 1;
-            cx.notify();
-        }
-    }
-    fn intro_back(&mut self, cx: &mut Context<Self>) {
-        if self.intro_step > 0 {
-            self.intro_step -= 1;
-            self.intro_epoch += 1;
-            cx.notify();
-        }
-    }
     fn intro_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         match event.keystroke.key.as_str() {
             "tab" => self.focus_step(event.keystroke.modifiers.shift, window, cx),
             "escape" => self.close_intro(Outcome::Skipped, cx),
-            "enter" | "right" => self.intro_next(cx),
-            "left" => self.intro_back(cx),
+            "enter" => self.close_intro(Outcome::Completed, cx),
             _ => {}
         }
     }
@@ -282,7 +254,7 @@ impl Gallery {
                 return;
             };
             let task = cx.background_executor().spawn(async move {
-                reframed::catalogue::fetch_search(&query)
+                pinacora::catalogue::fetch_search(&query)
                     .map_err(|e| format!("Could not search Reframed: {e:#}"))
             });
             let result = task.await;
@@ -345,7 +317,7 @@ impl Gallery {
         let page = request_page(self.page, refresh);
         let search_epoch = self.search.epoch;
         let task = cx.background_executor().spawn(async move {
-            reframed::catalogue::fetch_page(page).map_err(|e| format!("{e:#}"))
+            pinacora::catalogue::fetch_page(page).map_err(|e| format!("{e:#}"))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -420,7 +392,7 @@ impl Gallery {
             let url = art.preview_url();
             let id = art.id;
             let task = cx.background_executor().spawn(async move {
-                reframed::download::fetch(&url, false)
+                pinacora::download::fetch(&url, false)
                     .map(|(p, _, _)| p)
                     .map_err(|e| format!("{e:#}"))
             });
@@ -452,7 +424,7 @@ impl Gallery {
         let id = art.id;
         let task = cx
             .background_executor()
-            .spawn(async move { reframed::download::fetch(&url, false).map(|(path, _, _)| path) });
+            .spawn(async move { pinacora::download::fetch(&url, false).map(|(path, _, _)| path) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
@@ -490,7 +462,7 @@ impl Gallery {
         self.preview(art.clone(), cx);
         let id = art.id.clone();
         let task = cx.background_executor().spawn(async move {
-            reframed::catalogue::fetch_detail(&art).map_err(|e| format!("{e:#}"))
+            pinacora::catalogue::fetch_detail(&art).map_err(|e| format!("{e:#}"))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
@@ -524,9 +496,9 @@ impl Gallery {
         self.applying = true;
         self.downloading = true;
         self.status = "Downloading and validating the full resolution original…".into();
-        let all_desktops = reframed::platform::all_desktops_supported();
+        let all_desktops = pinacora::platform::all_desktops_supported();
         let task = cx.background_executor().spawn(async move {
-            reframed::download::fetch(&detail.original, true).map_err(|e| format!("{e:#}"))
+            pinacora::download::fetch(&detail.original, true).map_err(|e| format!("{e:#}"))
         });
         cx.spawn(async move |this, cx| {
             let downloaded = task.await;
@@ -556,7 +528,7 @@ impl Gallery {
             }
             let status = if all_desktops {
                 let task = cx.background_executor().spawn(async move {
-                    reframed::platform::apply_all_desktops(&path)
+                    pinacora::platform::apply_all_desktops(&path)
                         .map_err(|error| format!("{error:#}"))
                 });
                 match task.await {
@@ -565,7 +537,7 @@ impl Gallery {
                 }
             } else if cfg!(target_os = "linux") {
                 let task = cx.background_executor().spawn(async move {
-                    reframed::platform::apply(&path).map_err(|error| format!("{error:#}"))
+                    pinacora::platform::apply(&path).map_err(|error| format!("{error:#}"))
                 });
                 match task.await {
                     Ok(n) => format!("Wallpaper applied · {n} display setting(s) · {w} × {h}"),
@@ -573,7 +545,7 @@ impl Gallery {
                 }
             } else {
                 // AppKit requires the foreground/main thread on macOS 12–13.
-                match reframed::platform::apply(&path) {
+                match pinacora::platform::apply(&path) {
                     Ok(n) => format!("Wallpaper set on {n} connected display(s) in the current Desktop · {w} × {h}"),
                     Err(error) => format!("Could not apply wallpaper: {error:#}"),
                 }
@@ -629,6 +601,16 @@ impl Gallery {
         false
     }
     fn focus_step(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.intro_visible {
+            let next = if self.controls["intro-start"].is_focused(window) {
+                "intro-motion"
+            } else {
+                "intro-start"
+            };
+            self.controls[next].focus(window);
+            cx.notify();
+            return;
+        }
         if reverse {
             window.focus_prev();
         } else {
@@ -757,11 +739,11 @@ impl Gallery {
             .track_focus(
                 &self.controls[id]
                     .clone()
-                    .tab_stop(enabled && !self.intro_visible)
+                    .tab_stop(enabled && (id.starts_with("intro-") == self.intro_visible))
                     .tab_index(control_tab_index(id)),
             )
             .tab_index(0)
-            .tab_stop(enabled)
+            .tab_stop(enabled && (id.starts_with("intro-") == self.intro_visible))
             .px_3()
             .py_2()
             .rounded(px(10.))
@@ -769,12 +751,15 @@ impl Gallery {
             .border_1()
             .border_color(rgb(0x3a3a40))
             .text_sm()
-            .when(matches!(id, "motion-toggle" | "show-walkthrough"), |d| {
-                d.bg(rgba(0xffffff00))
-                    .border_color(rgba(0xffffff00))
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-            })
+            .when(
+                matches!(id, "motion-toggle" | "show-walkthrough" | "intro-motion"),
+                |d| {
+                    d.bg(rgba(0xffffff00))
+                        .border_color(rgba(0xffffff00))
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                },
+            )
             .when(
                 matches!(
                     id,
@@ -791,7 +776,7 @@ impl Gallery {
                         .line_height(px(24.))
                 },
             )
-            .when(id == "apply", |d| {
+            .when(matches!(id, "apply" | "intro-start"), |d| {
                 d.px_5()
                     .py_3()
                     .bg(rgb(ACCENT))
@@ -801,8 +786,20 @@ impl Gallery {
             })
             .when(enabled, |d| {
                 d.cursor_pointer()
-                    .hover(move |s| s.bg(rgb(if id == "apply" { 0x2994ff } else { RAISED })))
-                    .active(move |s| s.bg(rgb(if id == "apply" { 0x0068d1 } else { 0x36363c })))
+                    .hover(move |s| {
+                        s.bg(rgb(if matches!(id, "apply" | "intro-start") {
+                            0x2994ff
+                        } else {
+                            RAISED
+                        }))
+                    })
+                    .active(move |s| {
+                        s.bg(rgb(if matches!(id, "apply" | "intro-start") {
+                            0x0068d1
+                        } else {
+                            0x36363c
+                        }))
+                    })
             })
             .opacity(if enabled { 1. } else { 0.4 })
             .focus(|s| s.border_color(rgb(ACCENT)))
@@ -840,9 +837,7 @@ impl Gallery {
         match id {
             "back-to-results" => self.back_to_results(window, cx),
             "intro-motion" => self.toggle_motion(cx),
-            "intro-skip" => self.close_intro(Outcome::Skipped, cx),
-            "intro-back" => self.intro_back(cx),
-            "intro-next" => self.intro_next(cx),
+            "intro-start" => self.close_intro(Outcome::Completed, cx),
             "motion-toggle" => self.toggle_motion(cx),
             "show-walkthrough" => self.show_intro(window, cx),
             "refresh" => {
@@ -991,7 +986,7 @@ impl Gallery {
                 div()
                     .text_lg()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Reframed"),
+                    .child("Pinacora"),
             )
             .child(
                 div()
@@ -1038,7 +1033,7 @@ impl Gallery {
                     .child(self.search_input.clone())
                     .child(self.semantic(
                         "search".into(),
-                        "Search Reframed".into(),
+                        "Search artwork".into(),
                         AccessibilityRole::TextField,
                         self.query.clone(),
                         true,
@@ -1285,7 +1280,7 @@ impl Gallery {
                     )
                     .child(div().text_xs().text_color(rgb(0xa1a1aa)).child(self.text(
                         "display-scope",
-                        if reframed::platform::all_desktops_supported() {
+                        if pinacora::platform::all_desktops_supported() {
                             "Untouched original · All Desktops"
                         } else {
                             "Untouched original · Connected displays in this Desktop"
@@ -1605,129 +1600,20 @@ impl Gallery {
 }
 
 impl Gallery {
-    fn intro(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
-        let (title, description) = match self.intro_step {
-            0 => (
-                "Reframed",
-                "Browse artwork from Reframed and set a full-resolution original as your wallpaper.",
-            ),
-            1 => (
-                "Find your next view",
-                "Browse the artwork grid below the cinematic preview. Search Reframed by title or artist. Selecting a result brings its preview into view; Back to results restores your browsing position.",
-            ),
-            2 => (
-                "Make it yours",
-                if reframed::platform::all_desktops_supported() {
-                    "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to all Desktops."
-                } else if cfg!(target_os = "linux") {
-                    "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it through Hyprland with hyprpaper or GNOME. Hyprland changes last for the current session."
-                } else {
-                    "Select an artwork to preview it. Set wallpaper downloads the untouched full-resolution original and applies it to connected displays in your current Desktop. All Desktops requires macOS 14 or newer."
-                },
-            ),
-            _ => (
-                "Keep exploring",
-                "Load more artwork to expand the gallery. View source opens the original page, where you can explore the artwork and its attribution.",
-            ),
-        };
-        let path = self.selected.as_ref().and_then(|id| {
-            self.hero_previews
-                .get(id)
-                .or_else(|| self.previews.get(id).and_then(|p| p.as_ref().ok()))
-        });
-        let viewport = window.viewport_size();
-        let width = f32::from(viewport.width);
-        let height = f32::from(viewport.height);
-        let background = path.map(|path| {
-            let image = img(path.clone())
-                .absolute()
-                .object_fit(ObjectFit::Cover)
-                .opacity(0.35);
-            if self.motion_enabled {
-                // The session key remains stable across manual steps and resolution upgrades.
-                image
-                    .with_animation(
-                        SharedString::from(format!("intro-backdrop-{}", self.intro_backdrop_epoch)),
-                        Animation::new(Duration::from_millis(700))
-                            .with_easing(|t| 1. - (1. - t).powi(3)),
-                        move |image, t| {
-                            let scale = 1.025 + 0.025 * (1. - t);
-                            image
-                                .w(px(width * scale))
-                                .h(px(height * scale))
-                                .left(px((width - width * scale) * 0.5))
-                                .top(px((height - height * scale) * 0.5))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                image
-                    .left_0()
-                    .top_0()
-                    .w(px(width))
-                    .h(px(height))
-                    .into_any_element()
-            }
-        });
-        let title_element = div()
-            .relative()
-            .child(self.semantic(
-                "intro-title".into(),
-                title.into(),
-                AccessibilityRole::StaticText,
-                String::new(),
-                true,
-                false,
-                false,
-            ))
-            .text_size(px(if self.intro_step == 0 { 54. } else { 36. }))
-            .line_height(px(if self.intro_step == 0 { 62. } else { 44. }))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(title);
-        let copy = div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .children((self.intro_step == 0).then(|| {
-                div()
-                    .size(px(88.))
-                    .rounded(px(22.))
-                    .shadow(vec![BoxShadow {
-                        color: rgba(0x0a84ff26).into(),
-                        offset: point(px(0.), px(4.)),
-                        blur_radius: px(36.),
-                        spread_radius: px(3.),
-                    }])
-                    .child(app_icon(88.))
-            }))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0xa1a1aa))
-                    .child(if self.intro_step == 0 {
-                        "WELCOME".to_owned()
-                    } else {
-                        format!("{} / 3", self.intro_step)
-                    }),
-            )
-            .child(title_element)
-            .child(
-                div()
-                    .text_lg()
-                    .line_height(px(28.))
-                    .text_color(rgb(0xd1d1d6))
-                    .child(self.text("intro-description", description)),
-            );
-        let copy = if self.motion_enabled {
-            copy.with_animation(
-                SharedString::from(format!("intro-step-{}", self.intro_epoch)),
-                Animation::new(Duration::from_millis(280)).with_easing(|t| 1. - (1. - t).powi(3)),
-                |e, t| e.opacity(t).relative().top(px(8. * (1. - t))),
-            )
-            .into_any_element()
-        } else {
-            copy.into_any_element()
+    fn intro(&self, _window: &Window, cx: &Context<Self>) -> AnyElement {
+        let copy = |id: &str, label: &str| {
+            div()
+                .relative()
+                .child(label.to_string())
+                .child(self.semantic(
+                    id.into(),
+                    label.into(),
+                    AccessibilityRole::StaticText,
+                    String::new(),
+                    true,
+                    false,
+                    false,
+                ))
         };
         div()
             .id("walkthrough-overlay")
@@ -1735,283 +1621,51 @@ impl Gallery {
             .inset_0()
             .occlude()
             .bg(rgb(CANVAS))
-            .overflow_hidden()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_6()
             .track_focus(&self.intro_focus)
             .on_key_down(cx.listener(Self::intro_key))
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .children(background)
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                90.,
-                linear_color_stop(rgba(0x111113e6), 0.),
-                linear_color_stop(rgba(0x11111399), 1.),
-            )))
             .child(
                 div()
-                    .absolute()
-                    .top(px(16.))
-                    .right(px(24.))
+                    .w_full()
+                    .max_w(px(480.))
                     .flex()
+                    .flex_col()
                     .items_center()
-                    .gap_3()
+                    .gap_5()
+                    .text_center()
+                    .child(app_icon(88.))
                     .child(
                         div()
-                            .id("intro-motion")
-                            .on_key_down(cx.listener(|app, e: &KeyDownEvent, window, cx| {
-                                if e.keystroke.key == "tab" {
-                                    cx.stop_propagation();
-                                    app.focus_step(e.keystroke.modifiers.shift, window, cx);
-                                    return;
-                                }
-                                if matches!(e.keystroke.key.as_str(), "enter" | "space") {
-                                    app.activate("intro-motion", window, cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
-                            .relative()
-                            .track_focus(
-                                &self.controls["intro-motion"]
-                                    .clone()
-                                    .tab_stop(true)
-                                    .tab_index(control_tab_index("intro-motion")),
-                            )
-                            .tab_index(0)
-                            .child(self.semantic(
-                                "intro-motion".into(),
-                                "Motion".into(),
-                                AccessibilityRole::Button,
-                                String::new(),
-                                true,
-                                false,
-                                false,
-                            ))
-                            .px_3()
-                            .py_2()
-                            .rounded(px(10.))
-                            .border_1()
-                            .border_color(rgba(0xffffff00))
-                            .focus(|s| s.border_color(rgb(ACCENT)))
-                            .hover(|s| s.bg(rgb(RAISED)))
-                            .active(|s| s.bg(rgb(SURFACE)))
-                            .text_xs()
-                            .text_color(rgb(0xa1a1aa))
-                            .cursor_pointer()
-                            .child(if self.motion_enabled {
-                                "Motion on"
-                            } else {
-                                "Motion off"
-                            })
-                            .on_click(cx.listener(|app, _, _, cx| app.toggle_motion(cx))),
+                            .w_full()
+                            .text_size(px(36.))
+                            .line_height(px(44.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(copy("intro-title", "Welcome to Pinacora")),
                     )
                     .child(
                         div()
-                            .id("intro-skip")
-                            .on_key_down(cx.listener(|app, e: &KeyDownEvent, window, cx| {
-                                if e.keystroke.key == "tab" {
-                                    cx.stop_propagation();
-                                    app.focus_step(e.keystroke.modifiers.shift, window, cx);
-                                    return;
-                                }
-                                if matches!(e.keystroke.key.as_str(), "enter" | "space") {
-                                    app.activate("intro-skip", window, cx);
-                                    cx.stop_propagation();
-                                }
-                            }))
-                            .relative()
-                            .track_focus(
-                                &self.controls["intro-skip"]
-                                    .clone()
-                                    .tab_stop(true)
-                                    .tab_index(control_tab_index("intro-skip")),
-                            )
-                            .tab_index(0)
-                            .child(self.semantic(
-                                "intro-skip".into(),
-                                "Skip".into(),
-                                AccessibilityRole::Button,
-                                String::new(),
-                                true,
-                                false,
-                                false,
-                            ))
-                            .px_3()
-                            .py_2()
-                            .rounded(px(10.))
-                            .bg(rgb(SURFACE))
-                            .border_1()
-                            .border_color(rgb(0x3a3a40))
-                            .focus(|s| s.border_color(rgb(ACCENT)))
-                            .active(|s| s.bg(rgb(0x36363c)))
-                            .text_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(0xffffff28)))
-                            .child("Skip")
-                            .on_click(
-                                cx.listener(|app, _, _, cx| app.close_intro(Outcome::Skipped, cx)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(72.))
-                    .bottom(px(32.))
-                    .left(px(32.))
-                    .right(px(32.))
-                    .flex()
-                    .justify_center()
-                    .items_center()
+                            .w_full()
+                            .text_size(px(18.))
+                            .line_height(px(28.))
+                            .text_color(rgb(TEXT))
+                            .child(copy("intro-description", "Browse classic art, choose a painting, and set it as your wallpaper.")),
+                    )
                     .child(
                         div()
-                            .w(px(560.))
-                            .flex()
-                            .flex_col()
-                            .gap_8()
-                            .child(copy)
-                            .child(div().flex().gap_2().children((0..4).map(|step| {
-                                div()
-                                    .w(px(if step == self.intro_step { 22. } else { 6. }))
-                                    .h(px(6.))
-                                    .rounded(px(3.))
-                                    .bg(if step == self.intro_step {
-                                        rgb(ACCENT)
-                                    } else {
-                                        rgb(0x505057)
-                                    })
-                            })))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .id("intro-back")
-                                            .on_key_down(cx.listener(
-                                                |app, e: &KeyDownEvent, window, cx| {
-                                                    if e.keystroke.key == "tab" {
-                                                        cx.stop_propagation();
-                                                        app.focus_step(
-                                                            e.keystroke.modifiers.shift,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                        return;
-                                                    }
-                                                    if matches!(
-                                                        e.keystroke.key.as_str(),
-                                                        "enter" | "space"
-                                                    ) {
-                                                        app.activate("intro-back", window, cx);
-                                                        cx.stop_propagation();
-                                                    }
-                                                },
-                                            ))
-                                            .relative()
-                                            .track_focus(
-                                                &self.controls["intro-back"]
-                                                    .clone()
-                                                    .tab_stop(self.intro_step > 0)
-                                                    .tab_index(control_tab_index("intro-back")),
-                                            )
-                                            .tab_index(0)
-                                            .tab_stop(self.intro_step > 0)
-                                            .child(self.semantic(
-                                                "intro-back".into(),
-                                                "Back".into(),
-                                                AccessibilityRole::Button,
-                                                String::new(),
-                                                self.intro_step > 0,
-                                                false,
-                                                false,
-                                            ))
-                                            .px_4()
-                                            .py_3()
-                                            .rounded(px(10.))
-                                            .border_1()
-                                            .border_color(rgba(0xffffff00))
-                                            .focus(|s| s.border_color(rgb(ACCENT)))
-                                            .hover(|s| s.bg(rgb(RAISED)))
-                                            .active(|s| s.bg(rgb(SURFACE)))
-                                            .text_sm()
-                                            .cursor_pointer()
-                                            .opacity(if self.intro_step > 0 { 1. } else { 0. })
-                                            .child("Back")
-                                            .on_click(
-                                                cx.listener(|app, _, _, cx| app.intro_back(cx)),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("intro-next")
-                                            .on_key_down(cx.listener(
-                                                |app, e: &KeyDownEvent, window, cx| {
-                                                    if e.keystroke.key == "tab" {
-                                                        cx.stop_propagation();
-                                                        app.focus_step(
-                                                            e.keystroke.modifiers.shift,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                        return;
-                                                    }
-                                                    if matches!(
-                                                        e.keystroke.key.as_str(),
-                                                        "enter" | "space"
-                                                    ) {
-                                                        app.activate("intro-next", window, cx);
-                                                        cx.stop_propagation();
-                                                    }
-                                                },
-                                            ))
-                                            .relative()
-                                            .track_focus(
-                                                &self.controls["intro-next"]
-                                                    .clone()
-                                                    .tab_stop(true)
-                                                    .tab_index(control_tab_index("intro-next")),
-                                            )
-                                            .tab_index(0)
-                                            .child(self.semantic(
-                                                "intro-next".into(),
-                                                "Continue walkthrough".into(),
-                                                AccessibilityRole::Button,
-                                                String::new(),
-                                                true,
-                                                false,
-                                                false,
-                                            ))
-                                            .px_5()
-                                            .py_3()
-                                            .rounded(px(10.))
-                                            .bg(rgb(ACCENT))
-                                            .border_1()
-                                            .border_color(rgb(ACCENT))
-                                            .focus(|s| s.border_color(rgb(TEXT)))
-                                            .hover(|s| s.bg(rgb(0x2994ff)))
-                                            .active(|s| s.bg(rgb(0x0068d1)))
-                                            .text_color(rgb(TEXT))
-                                            .text_sm()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .cursor_pointer()
-                                            .child(if self.intro_step == 0 {
-                                                "Continue"
-                                            } else if self.intro_step == 3 {
-                                                "Start exploring"
-                                            } else {
-                                                "Next"
-                                            })
-                                            .on_click(
-                                                cx.listener(|app, _, _, cx| app.intro_next(cx)),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0xa1a1aa))
-                                    .child("Escape to skip · Enter to continue"),
-                            ),
-                    ),
+                            .text_color(rgb(MUTED))
+                            .child(copy("intro-attribution", "Artwork from Reframed Gallery.")),
+                    )
+                    .child(self.button("intro-start", "Start browsing", true, cx))
+                    .child(self.button(
+                        "intro-motion",
+                        if self.motion_enabled { "Motion on" } else { "Motion off" },
+                        true,
+                        cx,
+                    )),
             )
             .into_any_element()
     }
@@ -2019,7 +1673,10 @@ impl Gallery {
 impl Render for Gallery {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.intro_visible
-            && (window.focused(cx).is_none() || self.intro_focus.is_focused(window))
+            && (window.focused(cx).is_none()
+                || self.intro_focus.is_focused(window)
+                || self.controls["intro-start"].is_focused(window)
+                || self.controls["intro-motion"].is_focused(window))
         {
             self.focus.focus(window);
         }
@@ -2187,7 +1844,7 @@ impl Render for Gallery {
             });
         });
         if self.intro_visible && !self.intro_focus.contains_focused(window, cx) {
-            self.intro_focus.focus(window);
+            self.controls["intro-start"].focus(window);
         }
         div()
             .relative()
@@ -2472,10 +2129,10 @@ impl SiteSearch {
 
 fn control_tab_index(id: &str) -> isize {
     match id {
-        "motion-toggle" | "intro-motion" => 0,
-        "show-walkthrough" | "intro-skip" => 1,
-        "clear-search" | "intro-back" => 3,
-        "refresh" | "intro-next" => 4,
+        "motion-toggle" | "intro-start" => 0,
+        "show-walkthrough" | "intro-motion" => 1,
+        "clear-search" => 3,
+        "refresh" => 4,
         "show-new" => 10,
         "retry-catalogue" => 11,
         "back-to-results" => 20,

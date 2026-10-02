@@ -1,57 +1,34 @@
 #!/usr/bin/env python3
-"""Regenerate Reframed's original vector icon using macOS Core Graphics."""
-import pathlib
-import subprocess
-import tempfile
+"""Package the selected Pinacora artwork as PNG and macOS ICNS icons.
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+Requires Pillow: python3 -m pip install Pillow
+The checked-in source is preserved in full, including its ivory background.
+"""
+from pathlib import Path
+
+try:
+    from PIL import Image
+except ImportError:
+    raise SystemExit("Pillow is required. Install it with: python3 -m pip install Pillow")
+
+ROOT = Path(__file__).resolve().parents[1]
 RESOURCES = ROOT / "resources"
-# Coordinates use the SVG's top-left origin; Swift flips the graphics context.
-SHAPES = [
-    (64, 64, 896, 896, 200, "#171c1b", None, 0),
-    (222, 270, 532, 532, 62, "none", "#b98645", 34),
-    (270, 222, 532, 532, 62, "#202725", "#f1e7ce", 38),
-    (344, 296, 384, 384, 20, "none", "#8b9a8d", 8),
-]
-svg = ['<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">', '<title>Reframed app icon</title>']
-for x, y, w, h, r, fill, stroke, sw in SHAPES:
-    svg.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" fill="{fill}" stroke="{stroke or "none"}" stroke-width="{sw}"/>')
-svg.append('</svg>')
-RESOURCES.joinpath('app-icon.svg').write_text('\n'.join(svg) + '\n')
 
-def color(hex_value):
-    return ', '.join(f'{label}: {int(hex_value[i:i + 2], 16) / 255}' for label, i in zip(('red', 'green', 'blue'), (1, 3, 5)))
 
-swift = '''import AppKit
-let output = CommandLine.arguments[1]
-let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-let context = NSGraphicsContext(bitmapImageRep: bitmap)!
-NSGraphicsContext.saveGraphicsState()
-NSGraphicsContext.current = context
-let cg = context.cgContext
-cg.translateBy(x: 0, y: 1024)
-cg.scaleBy(x: 1, y: -1)
-'''
-for x, y, w, h, r, fill, stroke, sw in SHAPES:
-    swift += f'cg.addPath(CGPath(roundedRect: CGRect(x: {x}, y: {y}, width: {w}, height: {h}), cornerWidth: {r}, cornerHeight: {r}, transform: nil))\n'
-    if fill != 'none':
-        swift += f'cg.setFillColor(CGColor({color(fill)}, alpha: 1))\n'
-    if stroke:
-        swift += f'cg.setStrokeColor(CGColor({color(stroke)}, alpha: 1))\ncg.setLineWidth({sw})\n'
-    mode = '.fillStroke' if fill != 'none' and stroke else '.fill' if fill != 'none' else '.stroke'
-    swift += f'cg.drawPath(using: {mode})\n'
-swift += '''NSGraphicsContext.restoreGraphicsState()
-try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
-'''
-with tempfile.TemporaryDirectory(prefix='reframed-icon-') as temporary:
-    temp = pathlib.Path(temporary)
-    source = temp / 'render.swift'
-    source.write_text(swift)
-    subprocess.run(['swift', str(source), str(RESOURCES / 'app-icon.png')], check=True)
-    iconset = temp / 'AppIcon.iconset'
-    iconset.mkdir()
-    for size in (16, 32, 128, 256, 512):
-        for scale in (1, 2):
-            suffix = '@2x' if scale == 2 else ''
-            subprocess.run(['sips', '-z', str(size * scale), str(size * scale), str(RESOURCES / 'app-icon.png'), '--out', str(iconset / f'icon_{size}x{size}{suffix}.png')], check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(['iconutil', '-c', 'icns', str(iconset), '-o', str(RESOURCES / 'AppIcon.icns')], check=True)
+def main():
+    source = RESOURCES / "pinacora-icon-source.png"
+    with Image.open(source) as artwork:
+        if artwork.width != artwork.height:
+            raise SystemExit(f"Icon source must be square; got {artwork.size}. No crop was applied.")
+        icon = artwork.convert("RGBA").resize((1024, 1024), Image.Resampling.LANCZOS)
+    icon.save(RESOURCES / "app-icon.png")
+    icon.save(
+        RESOURCES / "AppIcon.icns",
+        format="ICNS",
+        sizes=[(16, 16), (32, 32), (64, 64), (128, 128), (256, 256), (512, 512), (1024, 1024)],
+    )
+    print("Generated resources/app-icon.png and resources/AppIcon.icns")
+
+
+if __name__ == "__main__":
+    main()

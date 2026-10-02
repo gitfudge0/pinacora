@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Reframed. Small, focused pull requests and reproducible bug reports are welcome. This is an unofficial macOS and Linux app; preserve gallery attribution, source links, and original-image behavior.
+Thanks for helping improve Pinacora. Small, focused pull requests and reproducible bug reports are welcome. This is an unofficial macOS and Linux app; preserve gallery attribution, source links, and original-image behavior.
 
 For a substantial feature or visual change, open an issue first so the approach can be discussed. For a bug, include the app version, operating system version, desktop environment, architecture, steps to reproduce, and expected versus actual behavior. Redact personal information from screenshots and logs. Report vulnerabilities through [the security process](SECURITY.md), rather than a public issue.
 

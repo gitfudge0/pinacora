@@ -70,7 +70,7 @@ pub fn agent() -> ureq::Agent {
 pub fn get_text(url: &str) -> Result<String> {
     let response = agent()
         .get(url)
-        .set("User-Agent", "Mozilla/5.0 (Reframed desktop)")
+        .set("User-Agent", "Mozilla/5.0 (Pinacora desktop)")
         .set("Referer", SITE)
         .call()?;
     let mut reader = response.into_reader().take(8 * 1024 * 1024 + 1);

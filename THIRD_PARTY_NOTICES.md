@@ -1,6 +1,6 @@
 # Third-party notices
 
-The MIT license in this repository covers Reframed's project code, documentation, and original project assets. Dependencies retain their own licenses. Gallery artwork is not bundled, and its copyrights and applicable terms remain separate from the software license. Artist attribution and links to the original gallery pages are shown in the app. This project is not affiliated with or endorsed by the gallery.
+The MIT license in this repository covers Pinacora's project code, documentation, and original project assets. Dependencies retain their own licenses. Gallery artwork is not bundled, and its copyrights and applicable terms remain separate from the software license. Artist attribution and links to the original gallery pages are shown in the app. This project is not affiliated with or endorsed by the gallery.
 
 ## Direct dependencies
 

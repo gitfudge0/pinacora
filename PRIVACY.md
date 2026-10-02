@@ -1,6 +1,6 @@
 # Privacy
 
-Reframed has no account system, analytics SDK, advertising, telemetry, or automatic crash reporting in its application code.
+Pinacora has no account system, analytics SDK, advertising, telemetry, or automatic crash reporting in its application code.
 
 ## Network requests
 
@@ -10,10 +10,12 @@ Search sends trimmed queries of at least two characters to Reframed’s gallery 
 
 ## Local data
 
-The app stores preview images in `~/Library/Caches/Reframed/previews`, originals in `~/Library/Application Support/Reframed/originals`, and a versioned walkthrough completion/skip preference in `~/Library/Application Support/Reframed/walkthrough.json`. Image filenames are hashes of source URLs. There is no automatic cache-size cap or expiry. Search text and the Motion setting are not persisted by the app.
+The app stores preview images in `~/Library/Caches/Pinacora/previews`, originals in `~/Library/Application Support/Pinacora/originals`, and a versioned walkthrough completion/skip preference in `~/Library/Application Support/Pinacora/walkthrough.json`. Image filenames are hashes of source URLs. There is no automatic cache-size cap or expiry. Search text and the Motion setting are not persisted by the app.
 
-On macOS 14 or newer, wallpaper application writes the local original’s file URL into macOS’s local wallpaper store to apply it to all Desktops, then restarts the wallpaper service. The app preserves a separate backup before each change at `~/Library/Application Support/com.apple.wallpaper/Store/Index.plist.reframed-backup-*`. These backups retain the previous local wallpaper configuration, including existing file paths, and are not automatically removed. On macOS 12–13 it passes the file URL to the public macOS API for connected displays in the current Desktop. Wallpaper application makes no additional network requests. Removing an original currently in use may affect your wallpaper.
+On macOS 14 or newer, wallpaper application writes the local original’s file URL into macOS’s local wallpaper store to apply it to all Desktops, then restarts the wallpaper service. The app preserves a separate backup before each change at `~/Library/Application Support/com.apple.wallpaper/Store/Index.plist.pinacora-backup-*`. These backups retain the previous local wallpaper configuration, including existing file paths, and are not automatically removed. On macOS 12–13 it passes the file URL to the public macOS API for connected displays in the current Desktop. Wallpaper application makes no additional network requests. Removing an original currently in use may affect your wallpaper.
 
 Quit the app and use Finder to remove its cache and preference folders if desired. Deleting the app alone does not remove those files. Bug reports, screenshots, and logs that you choose to post on GitHub are subject to GitHub's policies; remove personal information before sharing them.
 
-On Linux, originals and walkthrough preferences use `$XDG_DATA_HOME/reframed` (default `~/.local/share/reframed`); previews use `$XDG_CACHE_HOME/reframed/previews` (default `~/.cache/reframed/previews`). Relative or empty XDG values are ignored. Wallpaper application passes the retained original's path to local hyprpaper IPC on Hyprland or its file URI to GNOME background settings, without additional network requests. Hyprland changes are limited to the current session and do not edit startup configuration. The local installer writes a binary in `~/.local/bin`, plus a launcher and icon in the user data directory. Remove these files and the storage folders to uninstall and clear local data.
+On Linux, originals and walkthrough preferences use `$XDG_DATA_HOME/pinacora` (default `~/.local/share/pinacora`); previews use `$XDG_CACHE_HOME/pinacora/previews` (default `~/.cache/pinacora/previews`). Relative or empty XDG values are ignored. Wallpaper application passes the retained original's path to local hyprpaper IPC on Hyprland or its file URI to GNOME background settings, without additional network requests. Hyprland changes are limited to the current session and do not edit startup configuration. The local installer writes a binary in `~/.local/bin`, plus a launcher and icon in the user data directory. Remove these files and the storage folders to uninstall and clear local data.
+
+If an existing Reframed directory (macOS) or reframed directory (Linux) exists at a data or cache location, Pinacora continues to use it, independently for data and caches, even if the new directory also exists. It does not migrate or delete files. This preserves walkthrough preferences and original paths used by active wallpapers. Existing `Index.plist.reframed-backup-*` backups are left in place.

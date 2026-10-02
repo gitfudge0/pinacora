@@ -16,4 +16,4 @@ These bundles are **ad-hoc signed and not notarized by Apple**. If macOS blocks 
 
 The app depends on public gallery pages and CDN access. Automatic updates, wallpaper rotation, launch at login, automatic cache-size caps, and wallpaper management for other Spaces/disconnected displays are not included. Disable motion using the in-app toggle when needed.
 
-This is an unofficial app, independent of and not endorsed by Reframed. Artwork rights remain with their respective holders. See the [README](https://github.com/gitfudge0/reframed#readme), [privacy policy](https://github.com/gitfudge0/reframed/blob/main/PRIVACY.md), and [changelog](https://github.com/gitfudge0/reframed/blob/main/CHANGELOG.md).
+This is an unofficial app, independent of and not endorsed by Reframed. Artwork rights remain with their respective holders. See the [README](https://github.com/gitfudge0/pinacora#readme), [privacy policy](https://github.com/gitfudge0/pinacora/blob/main/PRIVACY.md), and [changelog](https://github.com/gitfudge0/pinacora/blob/main/CHANGELOG.md).

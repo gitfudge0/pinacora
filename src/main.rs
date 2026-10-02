@@ -6,7 +6,7 @@ use gpui::{
     App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SharedString,
     TitlebarOptions, WindowBounds, WindowOptions, actions, point, px, size,
 };
-actions!(reframed, [Quit]);
+actions!(pinacora, [Quit]);
 fn main() {
     if std::env::args().any(|s| s == "--check-source") {
         match check_source() {
@@ -31,18 +31,18 @@ fn main() {
             None,
         )]);
         cx.set_menus(vec![Menu {
-            name: "Reframed".into(),
-            items: vec![MenuItem::action("Quit Reframed", Quit)],
+            name: "Pinacora".into(),
+            items: vec![MenuItem::action("Quit Pinacora", Quit)],
         }]);
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 #[cfg(target_os = "linux")]
-                app_id: Some("reframed".into()),
+                app_id: Some("pinacora".into()),
                 window_min_size: Some(size(px(940.), px(620.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("Reframed")),
+                    title: Some(SharedString::from("Pinacora")),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(18.), px(20.))),
                 }),
@@ -50,22 +50,22 @@ fn main() {
             },
             |window, cx| {
                 #[cfg(target_os = "linux")]
-                window.set_window_title("Reframed");
+                window.set_window_title("Pinacora");
                 #[cfg(not(target_os = "linux"))]
                 let _ = window;
                 cx.new(ui::Gallery::new)
             },
         )
-        .expect("Could not open Reframed window");
+        .expect("Could not open Pinacora window");
         cx.activate(true);
     });
 }
 fn check_source() -> anyhow::Result<()> {
-    let items = reframed::catalogue::fetch_page(1)?;
+    let items = pinacora::catalogue::fetch_page(1)?;
     println!("Catalogue: {} artworks", items.len());
     let art = &items[0];
-    let detail = reframed::catalogue::fetch_detail(art)?;
-    let (path, w, h) = reframed::download::fetch(&detail.original, true)?;
+    let detail = pinacora::catalogue::fetch_detail(art)?;
+    let (path, w, h) = pinacora::download::fetch(&detail.original, true)?;
     println!(
         "Original: {} — {} ({w} × {h}); {}",
         detail.artist,

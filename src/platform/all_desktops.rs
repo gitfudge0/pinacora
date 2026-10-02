@@ -127,7 +127,7 @@ fn save(store: &Path, path: &Path) -> Result<std::path::PathBuf> {
     let updated = transform(&original, path)?;
     let directory = store.parent().unwrap();
     let mut backup = tempfile::Builder::new()
-        .prefix("Index.plist.reframed-backup-")
+        .prefix("Index.plist.pinacora-backup-")
         .tempfile_in(directory)
         .context("Could not create wallpaper backup")?;
     backup.write_all(&original)?;
@@ -135,7 +135,7 @@ fn save(store: &Path, path: &Path) -> Result<std::path::PathBuf> {
     backup.as_file().sync_all()?;
     let (_, backup_path) = backup.keep().context("Could not retain wallpaper backup")?;
     let mut replacement = tempfile::Builder::new()
-        .prefix(".reframed-wallpaper-")
+        .prefix(".pinacora-wallpaper-")
         .tempfile_in(directory)?;
     replacement.write_all(&updated)?;
     replacement

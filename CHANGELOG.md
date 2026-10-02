@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Rename the app to Pinacora, with updated launcher and transparent in-app artwork icons.
+- Use Pinacora packaging and new-install storage names while retaining existing Reframed storage directories in place to preserve downloaded originals and walkthrough preferences.
+
 ## 0.2.0 — Gallery search and all Desktops
 
 - Set wallpaper applies the original to all Desktops on macOS 14 or newer, with a local wallpaper-store backup and background application. macOS 12–13 retains connected-display application in the current Desktop.

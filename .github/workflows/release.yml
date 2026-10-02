@@ -1,4 +1,4 @@
-name: Release macOS app
+name: Release Pinacora macOS app
 
 on:
   release:
@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          keychain="$RUNNER_TEMP/reframed-signing.keychain-db"
+          keychain="$RUNNER_TEMP/pinacora-signing.keychain-db"
           keychain_password=$(openssl rand -base64 48)
           echo "::add-mask::$keychain_password"
           printf '%s' "$SIGNING_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/signing.p12"
@@ -71,7 +71,7 @@ jobs:
       - name: Verify gitfudge certificate fingerprint
         run: |
           set -euo pipefail
-          codesign --display --extract-certificates="$RUNNER_TEMP/app-signing-" dist/Reframed.app
+          codesign --display --extract-certificates="$RUNNER_TEMP/app-signing-" dist/Pinacora.app
           fingerprint=$(openssl x509 -inform DER -in "$RUNNER_TEMP/app-signing-0" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d ':')
           test "$fingerprint" = 8A432625E90DDBE5053D595CBAD2BA712B976643
       - name: Remove temporary signing keychain
@@ -87,7 +87,7 @@ jobs:
               except subprocess.TimeoutExpired:
                   print("Trust cleanup timed out on disposable runner")
           PY
-          security delete-keychain "$RUNNER_TEMP/reframed-signing.keychain-db" || true
+          security delete-keychain "$RUNNER_TEMP/pinacora-signing.keychain-db" || true
           python3 - <<'PY'
           import os, pathlib
           root = pathlib.Path(os.environ["RUNNER_TEMP"])

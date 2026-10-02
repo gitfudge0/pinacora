@@ -21,7 +21,7 @@ struct Flag {
 }
 
 pub fn default_path() -> Result<PathBuf> {
-    Ok(reframed::storage::data_dir()?.join("walkthrough.json"))
+    Ok(pinacora::storage::data_dir()?.join("walkthrough.json"))
 }
 pub fn dismissed(path: &Path) -> Result<bool> {
     let file = match std::fs::File::open(path) {
@@ -78,7 +78,7 @@ mod tests {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let p = std::env::temp_dir().join(format!(
-                "reframed-onboarding-tests-{}-{n}",
+                "pinacora-onboarding-tests-{}-{n}",
                 std::process::id()
             ));
             std::fs::create_dir_all(&p).unwrap();

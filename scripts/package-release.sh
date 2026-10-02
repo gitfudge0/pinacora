@@ -10,7 +10,7 @@ case "$target" in
   x86_64-apple-darwin) arch=x86_64 ;;
   *) echo "Unsupported macOS target: $target" >&2; exit 1 ;;
 esac
-version=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; m=json.load(sys.stdin); print(next(p["version"] for p in m["packages"] if p["id"] in m["workspace_members"] and p["name"] == "reframed"))')
+version=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; m=json.load(sys.stdin); print(next(p["version"] for p in m["packages"] if p["id"] in m["workspace_members"] and p["name"] == "pinacora"))')
 plist_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' resources/Info.plist)
 [ "$version" = "$plist_version" ] || { echo "Cargo version $version differs from bundle version $plist_version" >&2; exit 1; }
 if [ -n "$tag" ] && [ "$tag" != "v$version" ]; then
@@ -18,8 +18,8 @@ if [ -n "$tag" ] && [ "$tag" != "v$version" ]; then
   exit 1
 fi
 ./scripts/build-macos.sh --target "$target" --signing-identity "${MACOS_SIGNING_IDENTITY:--}"
-archive="Reframed-$version-macos-$arch.zip"
+archive="Pinacora-$version-macos-$arch.zip"
 mkdir -p dist/releases
-ditto -c -k --sequesterRsrc --keepParent dist/Reframed.app "dist/releases/$archive"
+ditto -c -k --sequesterRsrc --keepParent dist/Pinacora.app "dist/releases/$archive"
 (cd dist/releases && shasum -a 256 "$archive" > "$archive.sha256")
 printf 'Packaged dist/releases/%s (signing identity: %s; not notarized)\n' "$archive" "${MACOS_SIGNING_IDENTITY:--}"

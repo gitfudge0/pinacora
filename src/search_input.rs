@@ -55,7 +55,7 @@ impl TextInput {
         Self {
             focus_handle: cx.focus_handle().tab_stop(true).tab_index(2),
             content: "".into(),
-            placeholder: "Search Reframed".into(),
+            placeholder: "Search artwork".into(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
