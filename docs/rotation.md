@@ -1,6 +1,6 @@
 # Rotation in the current checkout
 
-Rotation is unreleased source-build behavior. This document records the current implementation, which is still under development. Released v0.3.0 behavior is recorded separately in [Changelog](../CHANGELOG.md). See [the README](../README.md#use) for controls and [Privacy](../PRIVACY.md) for network requests, storage, and retention.
+Rotation is available in Pinacora 0.4.0 and newer. This document records its scheduling and control behavior. Release history is recorded in [Changelog](../CHANGELOG.md). See [the README](../README.md#use) for controls and [Privacy](../PRIVACY.md) for network requests, storage, and retention.
 
 ## Sources and catalogue
 

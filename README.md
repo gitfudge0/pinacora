@@ -48,7 +48,7 @@ Older releases retain the Reframed name.
 
 Search by title or artist, preview an artwork, and choose **Set wallpaper**. **View source** opens its gallery page with attribution. Browsing and downloads need internet access.
 
-Rotation is unreleased source-build behavior. Released v0.3.0 does not include it.
+Wallpaper rotation is available in Pinacora 0.4.0 and newer.
 
 Choose **Rotation** to change wallpapers every 1 to 1,440 minutes. **Entire gallery** starts with a wallpaper chosen across the gallery, independently of search, while the full catalogue loads quietly. Once cached, catalogue metadata is available immediately on later starts and resumes, including offline when the next original is cached. Pinacora saves artwork history to avoid repeating successfully shown artwork within the known catalogue cycle, even after reopening. The first background load extends the starting pool; later refreshes add artwork for the next cycle. **Selected artworks** rotates your saved collection in order; use **Add to rotation** while browsing, then save the collection and interval. At least two artworks are required.
 

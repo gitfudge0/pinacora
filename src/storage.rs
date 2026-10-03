@@ -89,8 +89,9 @@ mod tests {
     }
     #[test]
     fn existing_legacy_directories_take_precedence_without_moving_files() {
-        let root = tempfile::tempdir().unwrap();
         for (current, legacy) in [("pinacora", "reframed"), ("Pinacora", "Reframed")] {
+            // Each casing pair needs its own root on case-insensitive filesystems.
+            let root = tempfile::tempdir().unwrap();
             let old = root.path().join(legacy);
             std::fs::create_dir(&old).unwrap();
             std::fs::create_dir(root.path().join(current)).unwrap();
