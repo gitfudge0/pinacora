@@ -8,6 +8,22 @@ use gpui::{
 };
 actions!(pinacora, [Quit]);
 fn main() {
+    for arg in std::env::args().skip(1) {
+        let result = match arg.as_str() {
+            "--rotation-service" => Some(pinacora::rotation_service::run()),
+            "--rotation-service-bootstrap" => {
+                Some(pinacora::rotation_service_manager::ensure_running())
+            }
+            _ => None,
+        };
+        if let Some(result) = result {
+            if let Err(error) = result {
+                eprintln!("Rotation service failed: {error:#}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     if std::env::args().any(|s| s == "--check-source") {
         match check_source() {
             Ok(()) => return,

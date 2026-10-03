@@ -44,10 +44,13 @@ pub struct TextInput {
     is_selecting: bool,
     scroll_x: Pixels,
     tab_enabled: bool,
+    escape_closes: bool,
 }
 
 pub struct Changed(pub String);
 pub struct Navigate(pub bool);
+pub struct Dismiss;
+impl gpui::EventEmitter<Dismiss> for TextInput {}
 impl gpui::EventEmitter<Navigate> for TextInput {}
 impl gpui::EventEmitter<Changed> for TextInput {}
 impl TextInput {
@@ -64,7 +67,15 @@ impl TextInput {
             is_selecting: false,
             scroll_x: px(0.),
             tab_enabled: true,
+            escape_closes: false,
         }
+    }
+    pub fn interval(cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new(cx);
+        input.content = "30".into();
+        input.placeholder = "Minutes".into();
+        input.escape_closes = true;
+        input
     }
     pub fn set_tab_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.tab_enabled != enabled {
@@ -640,6 +651,7 @@ impl Render for TextInput {
             .key_context("TextInput")
             .id("editable-search")
             .tab_index(0)
+            .tab_stop(self.tab_enabled)
             .track_focus(&self.focus_handle(cx))
             .rounded(px(10.))
             .border_1()
@@ -655,7 +667,14 @@ impl Render for TextInput {
                 cx.stop_propagation();
                 cx.emit(Navigate(true));
             }))
-            .on_action(cx.listener(|this, _: &Clear, _, cx| this.clear(cx)))
+            .on_action(cx.listener(|this, _: &Clear, _, cx| {
+                if this.escape_closes {
+                    cx.emit(Dismiss);
+                    cx.stop_propagation();
+                } else {
+                    this.clear(cx);
+                }
+            }))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))

@@ -68,3 +68,26 @@ pub fn apply(path: &Path) -> Result<usize> {
 pub fn apply(_: &Path) -> Result<usize> {
     anyhow::bail!("Wallpaper support currently requires macOS")
 }
+
+/// Detect supported environments without changing the desktop.
+pub fn support_error() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    if cfg!(target_os = "linux") {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_lowercase();
+        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+            || desktop.contains("hyprland")
+            || desktop.split(':').any(|p| p == "gnome" || p == "ubuntu")
+        {
+            return None;
+        }
+        return Some(
+            "Wallpaper rotation supports GNOME and Hyprland with hyprpaper 0.8 or newer on Linux."
+                .into(),
+        );
+    }
+    Some("Wallpaper rotation supports macOS, GNOME and Hyprland.".into())
+}

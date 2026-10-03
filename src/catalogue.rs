@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub const SITE: &str = "https://www.reframed.gallery";
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Artwork {
     pub id: String,
     #[serde(rename = "r2Key")]
@@ -73,6 +73,9 @@ pub fn get_text(url: &str) -> Result<String> {
         .set("User-Agent", "Mozilla/5.0 (Pinacora desktop)")
         .set("Referer", SITE)
         .call()?;
+    read_text(response)
+}
+fn read_text(response: ureq::Response) -> Result<String> {
     let mut reader = response.into_reader().take(8 * 1024 * 1024 + 1);
     let mut body = String::new();
     std::io::Read::read_to_string(&mut reader, &mut body)?;
@@ -82,23 +85,136 @@ pub fn get_text(url: &str) -> Result<String> {
     Ok(body)
 }
 use std::io::Read;
+#[derive(Clone, Debug)]
+pub struct Page {
+    pub artworks: Vec<Artwork>,
+    pub last_page: Option<usize>,
+}
 pub fn fetch_page(page: usize) -> Result<Vec<Artwork>> {
+    Ok(fetch_page_info(page)?.artworks)
+}
+pub fn fetch_page_info(page: usize) -> Result<Page> {
+    anyhow::ensure!(
+        (1..=1000).contains(&page),
+        "Catalogue page is outside the safe range"
+    );
     let path = if page == 1 {
         format!("{SITE}/recent")
     } else {
         format!("{SITE}/recent/page/{page}")
     };
-    match get_text(&path) {
-        Ok(html) => parse_catalogue(&html),
+    match agent()
+        .get(&path)
+        .set("User-Agent", "Mozilla/5.0 (Pinacora desktop)")
+        .set("Referer", SITE)
+        .call()
+    {
+        Ok(response) => page_response(page, response),
         Err(error) => {
-            if let Some(ureq::Error::Status(status, _)) = error.downcast_ref::<ureq::Error>()
+            if let ureq::Error::Status(status, _) = &error
                 && is_pagination_end(page, *status)
             {
-                return Ok(Vec::new());
+                return Ok(Page {
+                    artworks: vec![],
+                    last_page: None,
+                });
             }
-            Err(error)
+            Err(error.into())
         }
     }
+}
+fn terminal_redirect(page: usize, status: u16, location: Option<&str>) -> Option<usize> {
+    if page <= 1 || !matches!(status, 301 | 302 | 303 | 307 | 308) {
+        return None;
+    }
+    let location = location?;
+    // Accept only canonical same-site pagination paths. Do not normalize dot
+    // segments, follow a redirect, or accept credentials, ports, queries or fragments.
+    let number = location
+        .strip_prefix("/recent/page/")
+        .or_else(|| location.strip_prefix("https://www.reframed.gallery/recent/page/"))?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let previous = number.parse::<usize>().ok()?;
+    (previous > 0 && previous == page - 1 && number == previous.to_string()).then_some(previous)
+}
+fn page_response(page: usize, response: ureq::Response) -> Result<Page> {
+    let status = response.status();
+    if matches!(status, 301 | 302 | 303 | 307 | 308) {
+        if let Some(previous) = terminal_redirect(page, status, response.header("Location")) {
+            return Ok(Page {
+                artworks: vec![],
+                last_page: Some(previous),
+            });
+        }
+        bail!("Unexpected catalogue redirect on page {page}; the redirect was not followed");
+    }
+    anyhow::ensure!(
+        (200..300).contains(&status),
+        "Unexpected catalogue response {status} on page {page}"
+    );
+    parse_page_info(&read_text(response)?)
+}
+fn pagination_page(href: &str) -> Option<usize> {
+    let url = url::Url::parse(SITE).ok()?.join(href).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("www.reframed.gallery")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let number = url.path().strip_prefix("/recent/page/")?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let page = number.parse::<usize>().ok()?;
+    (1..=1000).contains(&page).then_some(page)
+}
+/// Pagination is read only from real href attributes or decoded Next flight hrefs.
+/// It is a discovery hint, not proof that all pages have been enumerated.
+pub fn parse_page_info(html: &str) -> Result<Page> {
+    let artworks = parse_catalogue(html)?;
+    let mut last_page = None;
+    let mut record = |href: &str| {
+        if let Some(page) = pagination_page(href) {
+            last_page = Some(last_page.map_or(page, |last: usize| last.max(page)));
+        }
+    };
+    for marker in ["href=\"", "href='"] {
+        let quote = if marker.ends_with('\"') { '\"' } else { '\'' };
+        for tail in html.split(marker).skip(1) {
+            if let Some((href, _)) = tail.split_once(quote) {
+                record(href);
+            }
+        }
+    }
+    let mut flight = String::new();
+    for chunk in html.split("self.__next_f.push([1,").skip(1) {
+        if let Some(Ok(s)) = serde_json::Deserializer::from_str(chunk)
+            .into_iter::<String>()
+            .next()
+        {
+            flight.push_str(&s);
+        }
+    }
+    for tail in flight.split("\"href\"").skip(1) {
+        if let Some(tail) = tail.trim_start().strip_prefix(':')
+            && let Some(Ok(href)) = serde_json::Deserializer::from_str(tail.trim_start())
+                .into_iter::<String>()
+                .next()
+        {
+            record(&href);
+        }
+    }
+    Ok(Page {
+        artworks,
+        last_page,
+    })
 }
 /// The site's navigation search returns its top matches without pagination.
 pub fn search_url(query: &str) -> Result<url::Url> {
@@ -151,7 +267,7 @@ pub fn parse_search(body: &str) -> Result<Vec<Artwork>> {
     }
     Ok(artworks)
 }
-fn valid_artwork(item: &Artwork) -> bool {
+pub fn valid_artwork(item: &Artwork) -> bool {
     !item.id.is_empty()
         && !item.alt.is_empty()
         && item.key.starts_with("originals/")
@@ -248,6 +364,116 @@ pub fn fetch_detail(art: &Artwork) -> Result<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn redirect_response(location: &str) -> ureq::Response {
+        use std::str::FromStr;
+        ureq::Response::from_str(&format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+        ))
+        .unwrap()
+    }
+    #[test]
+    fn terminal_redirect_confirms_only_immediate_previous_same_site_page() {
+        for status in [301, 302, 303, 307, 308] {
+            assert_eq!(
+                terminal_redirect(59, status, Some("/recent/page/58")),
+                Some(58)
+            );
+            assert_eq!(
+                terminal_redirect(
+                    59,
+                    status,
+                    Some("https://www.reframed.gallery/recent/page/58")
+                ),
+                Some(58)
+            );
+        }
+        for location in [
+            "https://evil.example/recent/page/58",
+            "/recent/page/57",
+            "/recent/page/59",
+            "/recent/page/60",
+            "/recent",
+            "/recent/page/58?x=1",
+            "/recent/page/58#x",
+            "https://user@www.reframed.gallery/recent/page/58",
+            "https://www.reframed.gallery:443/recent/page/58",
+            "/recent/page/a/../58",
+            "/recent/page/058",
+            "/recent/page/0",
+        ] {
+            assert!(
+                terminal_redirect(59, 307, Some(location)).is_none(),
+                "{location}"
+            );
+            assert!(
+                page_response(59, redirect_response(location)).is_err(),
+                "{location}"
+            );
+        }
+        assert!(terminal_redirect(1, 307, Some("/recent/page/58")).is_none());
+        assert!(terminal_redirect(59, 200, Some("/recent/page/58")).is_none());
+        assert!(terminal_redirect(59, 307, None).is_none());
+        let end = page_response(59, redirect_response("/recent/page/58")).unwrap();
+        assert!(end.artworks.is_empty());
+        assert_eq!(end.last_page, Some(58));
+    }
+    #[test]
+    fn collection_stops_at_confirmed_terminal_redirect_without_following() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut requests = vec![];
+        let items = crate::rotation_catalogue::collect_with(
+            |page| {
+                requests.push(page);
+                if page == 3 {
+                    return page_response(page, redirect_response("/recent/page/2"));
+                }
+                Ok(Page {
+                    artworks: vec![Artwork {
+                        id: page.to_string(),
+                        key: format!("originals/Artist - {page}.jpg"),
+                        alt: page.to_string(),
+                        href: format!("/artwork/{page}"),
+                    }],
+                    last_page: Some(2),
+                })
+            },
+            &cancel,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(requests, [1, 2, 3]);
+    }
+    #[test]
+    fn pagination_accepts_only_bounded_same_site_recent_links() {
+        for href in [
+            "/recent/page/58",
+            "https://www.reframed.gallery/recent/page/58",
+        ] {
+            assert_eq!(pagination_page(href), Some(58));
+        }
+        for href in [
+            "/recent/page/0",
+            "/recent/page/1001",
+            "/recent/page/-1",
+            "/recent/page/2?x=1",
+            "/recent/page/2/",
+            "https://evil.example/recent/page/58",
+            "/artwork/58",
+            "/recent/page/no",
+        ] {
+            assert!(pagination_page(href).is_none(), "{href}");
+        }
+        let valid = r#"{"id":"a","r2Key":"originals/Artist - Title.jpg","alt":"Title","href":"/artwork/a"}"#;
+        let nav = r#"{"href":"/recent/page/58"}"#;
+        let html = format!(
+            "{}<a href=\"/recent/page/2\">Next</a>",
+            flight(&[valid, nav])
+        );
+        let page = parse_page_info(&html).unwrap();
+        assert_eq!(page.last_page, Some(58));
+        assert_eq!(page.artworks.len(), 1);
+    }
     #[test]
     fn search_maps_only_artworks_and_preserves_server_matches() {
         let body = r#"{"results":[{"kind":"artist","id":"artist"},{"kind":"tag","id":"tag"},{"kind":"artwork","id":"one","r2_key":"originals/Édouard Manet - Café.jpg","title":"Café","href":"/artwork/one"}]}"#;

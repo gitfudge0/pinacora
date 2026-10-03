@@ -14,7 +14,7 @@ The full background load extends the initial partial queue while preserving its 
 
 ## Editing and control decisions
 
-Opening settings copies saved preferences into a draft. Closing settings discards that draft. Add to rotation saves an artwork to the collection; changing its order, source, or interval in settings takes effect when saved.
+Opening settings copies saved preferences into a draft. Closing settings discards that draft. Save changes appears only after an edit; the close action becomes Cancel while edits are unsaved. Resume, Pause, Stop, and retry actions take effect immediately and are not undone by Cancel. The compact modal keeps status, source, and interval visible, with background operation and download details under How rotation works. Add to rotation saves an artwork to the collection; changing its order, source, or interval in settings takes effect when saved.
 
 Start prepares and applies the first candidate immediately. An interval-only save preserves the current queue and prepared original, and resets the running countdown immediately. Changing a selected collection rebuilds preparation; if rotation was running, successful preparation starts a fresh countdown without changing the current wallpaper. Saving a source switch prepares the replacement paused and keeps the current wallpaper until Resume or Change now. A failed setup keeps the saved configuration and wallpaper rather than committing the failed replacement.
 

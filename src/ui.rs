@@ -9,6 +9,8 @@ use gpui::{
     div, img, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
 };
 use pinacora::catalogue::{Artwork, Detail};
+use pinacora::rotation::{self, Source as RotationSource, State as RotationState};
+use pinacora::rotation_service::{self, Command, Snapshot};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -52,7 +54,87 @@ fn reveal_progress(t: f32, delay: f32) -> f32 {
     eased((t - delay) / (1. - delay))
 }
 
+struct Rotation {
+    snapshot: Snapshot,
+    draft: Option<rotation::Preferences>,
+    minutes: String,
+    command_busy: bool,
+    command_epoch: u64,
+    scroll: ScrollHandle,
+    reveal: Option<String>,
+    details_open: bool,
+}
+impl std::ops::Deref for Rotation {
+    type Target = Snapshot;
+    fn deref(&self) -> &Snapshot {
+        &self.snapshot
+    }
+}
+impl std::ops::DerefMut for Rotation {
+    fn deref_mut(&mut self) -> &mut Snapshot {
+        &mut self.snapshot
+    }
+}
+impl Rotation {
+    fn new() -> Self {
+        let result = rotation::default_path().and_then(|path| rotation::load(&path));
+        let error = result
+            .as_ref()
+            .err()
+            .map(|e| format!("Could not restore rotation settings: {e:#}"));
+        let prefs = result.unwrap_or_default();
+        let state = if prefs.configured {
+            RotationState::Paused
+        } else {
+            RotationState::Stopped
+        };
+        Self {
+            snapshot: Snapshot {
+                prefs,
+                state,
+                wants_running: false,
+                deadline: None,
+                current: None,
+                current_path: None,
+                next: None,
+                prepared_path: None,
+                pending: false,
+                error,
+                notice: "Rotation continues after closing Pinacora. Pause or stop it here.".into(),
+                skipped: vec![],
+                eligible: None,
+                cache_diagnostic: None,
+            },
+            draft: None,
+            minutes: "30".into(),
+            command_busy: false,
+            command_epoch: 0,
+            scroll: ScrollHandle::new(),
+            reveal: None,
+            details_open: false,
+        }
+    }
+    fn unavailable(&mut self, error: String) {
+        let report = self.prefs.configured || self.wants_running;
+        self.state = if self.prefs.configured {
+            RotationState::Paused
+        } else {
+            RotationState::Stopped
+        };
+        self.wants_running = false;
+        self.deadline = None;
+        self.pending = false;
+        self.prepared_path = None;
+        self.next = None;
+        if report {
+            self.error = Some(format!("Rotation service unavailable: {error}"));
+        }
+        self.notice = "Use Resume or Start rotation to reconnect the background service.".into();
+    }
+}
 pub struct Gallery {
+    rotation: Rotation,
+    rotation_input: Entity<TextInput>,
     ax: Rc<RefCell<Option<AccessibilityBridge>>>,
     ax_nodes: Rc<RefCell<Vec<AccessibilityNode>>>,
     ax_receiver: Option<async_channel::Receiver<AccessibilityAction>>,
@@ -113,6 +195,16 @@ impl Gallery {
             .unwrap_or(false);
         let (ax_sender, ax_receiver) = async_channel::bounded(64);
         let search_input = cx.new(TextInput::new);
+        let rotation_input = cx.new(TextInput::interval);
+        cx.subscribe(&rotation_input, |app, _, event: &Changed, cx| {
+            app.rotation.minutes = event.0.clone();
+            if app.rotation.draft.is_some() {
+                app.rotation.reveal = Some("rotation-interval".into());
+            }
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&rotation_input, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&search_input, |app, _, event: &Changed, cx| {
             app.query = event.0.clone();
             app.schedule_search(true, cx);
@@ -125,6 +217,20 @@ impl Gallery {
         .detach();
         cx.observe(&search_input, |_, _, cx| cx.notify()).detach();
         let controls = [
+            "rotation",
+            "rotation-add",
+            "rotation-entire",
+            "rotation-selected",
+            "rotation-details",
+            "rotation-close",
+            "rotation-start",
+            "rotation-save",
+            "rotation-pause",
+            "rotation-resume",
+            "rotation-stop",
+            "rotation-now",
+            "rotation-retry",
+            "rotation-stop-save",
             "back-to-results",
             "motion-toggle",
             "show-walkthrough",
@@ -146,6 +252,8 @@ impl Gallery {
         .map(|id| (id.to_owned(), cx.focus_handle().tab_stop(true)))
         .collect();
         let mut app = Self {
+            rotation: Rotation::new(),
+            rotation_input,
             ax: Rc::new(RefCell::new(None)),
             ax_nodes: Rc::new(RefCell::new(vec![])),
             ax_receiver: Some(ax_receiver),
@@ -199,11 +307,12 @@ impl Gallery {
             intro_focus: cx.focus_handle(),
             intro_save_error: None,
         };
+        app.rotation_poll(cx);
         app.load(true, cx);
         app
     }
     fn show_intro(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.applying {
+        if self.applying || self.rotation.draft.is_some() {
             return;
         }
         self.intro_visible = true;
@@ -493,20 +602,45 @@ impl Gallery {
         let Some(detail) = self.detail.clone() else {
             return;
         };
+        let Some(art) = self
+            .all_artworks()
+            .find(|a| Some(&a.id) == self.selected.as_ref())
+            .cloned()
+        else {
+            return;
+        };
+        if self.rotation.command_busy {
+            return;
+        }
+        self.rotation.command_epoch += 1;
         self.applying = true;
         self.downloading = true;
         self.status = "Downloading and validating the full resolution original…".into();
         let all_desktops = pinacora::platform::all_desktops_supported();
         let task = cx.background_executor().spawn(async move {
-            pinacora::download::fetch(&detail.original, true).map_err(|e| format!("{e:#}"))
+            let guard = rotation_service::manual_guard()
+                .map_err(|e| format!("Could not reserve wallpaper operation: {e:#}"))?;
+            let snapshot = pinacora::rotation_service_manager::ensure_running()
+                .and_then(|_| rotation_service::request(Command::Pause))
+                .map_err(|e| format!("Could not pause rotation; wallpaper was kept: {e:#}"))?;
+            let downloaded = pinacora::download::fetch(&detail.original, true)
+                .map_err(|e| format!("Could not download original: {e:#}"));
+            Ok::<_, String>((guard, snapshot, downloaded))
         });
         cx.spawn(async move |this, cx| {
-            let downloaded = task.await;
+            let paused = task.await;
+            let (downloaded, manual_guard) = match paused {
+                Ok((guard, snapshot, downloaded)) => {
+                    let _ = this.update(cx, |app, cx| { app.rotation.snapshot = snapshot; cx.notify(); });
+                    (downloaded, Some(guard))
+                }
+                Err(error) => (Err(error), None),
+            };
             let (path, w, h) = match downloaded {
                 Ok(original) => original,
                 Err(error) => {
                     let _ = this.update(cx, |app, cx| {
-                        app.status = format!("Could not download original: {error}");
+                        app.status = error;
                         app.applying = false;
                         app.downloading = false;
                         app.status_epoch += 1;
@@ -526,32 +660,43 @@ impl Gallery {
             }).is_err() {
                 return;
             }
-            let status = if all_desktops {
+            let manual_path = path.clone();
+            let (mut status, applied) = if all_desktops {
                 let task = cx.background_executor().spawn(async move {
                     pinacora::platform::apply_all_desktops(&path)
                         .map_err(|error| format!("{error:#}"))
                 });
                 match task.await {
-                    Ok(()) => format!("Wallpaper set on all Desktops · {w} × {h}"),
-                    Err(error) => format!("Could not apply wallpaper: {error}"),
+                    Ok(()) => (format!("Wallpaper set on all Desktops · {w} × {h}"), true),
+                    Err(error) => (format!("Could not apply wallpaper: {error}"), false),
                 }
             } else if cfg!(target_os = "linux") {
                 let task = cx.background_executor().spawn(async move {
                     pinacora::platform::apply(&path).map_err(|error| format!("{error:#}"))
                 });
                 match task.await {
-                    Ok(n) => format!("Wallpaper applied · {n} display setting(s) · {w} × {h}"),
-                    Err(error) => format!("Could not apply wallpaper: {error}"),
+                    Ok(n) => (format!("Wallpaper applied · {n} display setting(s) · {w} × {h}"), true),
+                    Err(error) => (format!("Could not apply wallpaper: {error}"), false),
                 }
             } else {
                 // AppKit requires the foreground/main thread on macOS 12–13.
                 match pinacora::platform::apply(&path) {
-                    Ok(n) => format!("Wallpaper set on {n} connected display(s) in the current Desktop · {w} × {h}"),
-                    Err(error) => format!("Could not apply wallpaper: {error:#}"),
+                    Ok(n) => (format!("Wallpaper set on {n} connected display(s) in the current Desktop · {w} × {h}"), true),
+                    Err(error) => (format!("Could not apply wallpaper: {error:#}"), false),
                 }
             };
+            if applied {
+                let task = cx.background_executor().spawn(async move {
+                    rotation_service::request(Command::ManualWallpaper { art, path: manual_path }).map_err(|e| format!("{e:#}"))
+                });
+                match task.await {
+                    Ok(snapshot) => { let _ = this.update(cx, |app, _| app.rotation.snapshot = snapshot); }
+                    Err(error) => status.push_str(&format!(" · Wallpaper set, but service status could not sync: {error}")),
+                }
+            }
+            drop(manual_guard);
             let _ = this.update(cx, |app, cx| {
-                app.status = status;
+                app.status = format!("{status} · Rotation paused");
                 app.applying = false;
                 app.status_epoch += 1;
                 cx.notify();
@@ -569,6 +714,10 @@ impl Gallery {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.rotation.draft.is_some() {
+            self.rotation_key(e, window, cx);
+            return matches!(e.keystroke.key.as_str(), "tab" | "escape");
+        }
         if self.intro_visible {
             return false;
         }
@@ -601,6 +750,10 @@ impl Gallery {
         false
     }
     fn focus_step(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rotation.draft.is_some() {
+            self.rotation_focus_step(reverse, window, cx);
+            return;
+        }
         if self.intro_visible {
             let next = if self.controls["intro-start"].is_focused(window) {
                 "intro-motion"
@@ -635,7 +788,7 @@ impl Gallery {
         cx.notify();
     }
     fn open_result(&mut self, art: Artwork, window: &mut Window, cx: &mut Context<Self>) {
-        if self.applying {
+        if self.applying || self.rotation.draft.is_some() || self.intro_visible {
             return;
         }
         self.results_offset = self.grid_scroll.offset();
@@ -647,7 +800,10 @@ impl Gallery {
         let this = cx.entity().downgrade();
         window.on_next_frame(move |window, cx| {
             let _ = this.update(cx, |app, cx| {
-                if app.selection_epoch == epoch && app.selected_result_preview {
+                if app.rotation.draft.is_none()
+                    && app.selection_epoch == epoch
+                    && app.selected_result_preview
+                {
                     app.controls["back-to-results"].focus(window);
                     cx.notify();
                 }
@@ -733,17 +889,26 @@ impl Gallery {
     ) -> AnyElement {
         let label: SharedString = label.into();
         let ax_label = label.to_string();
+        let primary = matches!(
+            id,
+            "apply" | "intro-start" | "rotation-start" | "rotation-save"
+        ) || (id == "rotation-resume" && !self.rotation_dirty());
+        let source_button = matches!(id, "rotation-entire" | "rotation-selected");
+        let source_selected = self.rotation.draft.as_ref().is_some_and(|draft| {
+            (id == "rotation-entire" && draft.source == RotationSource::EntireGallery)
+                || (id == "rotation-selected" && draft.source == RotationSource::Selected)
+        });
         div()
             .relative()
             .id(id)
             .track_focus(
                 &self.controls[id]
                     .clone()
-                    .tab_stop(enabled && (id.starts_with("intro-") == self.intro_visible))
+                    .tab_stop(enabled && self.control_available(id))
                     .tab_index(control_tab_index(id)),
             )
             .tab_index(0)
-            .tab_stop(enabled && (id.starts_with("intro-") == self.intro_visible))
+            .tab_stop(enabled && self.control_available(id))
             .px_3()
             .py_2()
             .rounded(px(10.))
@@ -752,7 +917,16 @@ impl Gallery {
             .border_color(rgb(0x3a3a40))
             .text_sm()
             .when(
-                matches!(id, "motion-toggle" | "show-walkthrough" | "intro-motion"),
+                matches!(
+                    id,
+                    "motion-toggle"
+                        | "show-walkthrough"
+                        | "rotation"
+                        | "intro-motion"
+                        | "rotation-details"
+                        | "rotation-stop"
+                        | "rotation-close"
+                ),
                 |d| {
                     d.bg(rgba(0xffffff00))
                         .border_color(rgba(0xffffff00))
@@ -763,7 +937,7 @@ impl Gallery {
             .when(
                 matches!(
                     id,
-                    "motion-toggle" | "show-walkthrough" | "refresh" | "clear-search"
+                    "motion-toggle" | "show-walkthrough" | "rotation" | "refresh" | "clear-search"
                 ),
                 |d| {
                     d.h(px(36.))
@@ -776,9 +950,34 @@ impl Gallery {
                         .line_height(px(24.))
                 },
             )
-            .when(matches!(id, "apply" | "intro-start"), |d| {
-                d.px_5()
-                    .py_3()
+            .when(source_button, |d| {
+                d.flex_1()
+                    .h(px(38.))
+                    .py_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .border_color(if source_selected {
+                        rgb(0x45454d)
+                    } else {
+                        rgba(0xffffff00)
+                    })
+                    .bg(if source_selected {
+                        rgb(0x323238)
+                    } else {
+                        rgba(0xffffff00)
+                    })
+                    .text_color(rgb(if source_selected { TEXT } else { MUTED }))
+                    .font_weight(if source_selected {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
+            })
+            .when(primary, |d| {
+                d.px_4()
+                    .py_2()
                     .bg(rgb(ACCENT))
                     .border_color(rgb(ACCENT))
                     .text_color(rgb(TEXT))
@@ -786,20 +985,8 @@ impl Gallery {
             })
             .when(enabled, |d| {
                 d.cursor_pointer()
-                    .hover(move |s| {
-                        s.bg(rgb(if matches!(id, "apply" | "intro-start") {
-                            0x2994ff
-                        } else {
-                            RAISED
-                        }))
-                    })
-                    .active(move |s| {
-                        s.bg(rgb(if matches!(id, "apply" | "intro-start") {
-                            0x0068d1
-                        } else {
-                            0x36363c
-                        }))
-                    })
+                    .hover(move |s| s.bg(rgb(if primary { 0x2994ff } else { RAISED })))
+                    .active(move |s| s.bg(rgb(if primary { 0x0068d1 } else { 0x36363c })))
             })
             .opacity(if enabled { 1. } else { 0.4 })
             .focus(|s| s.border_color(rgb(ACCENT)))
@@ -810,11 +997,11 @@ impl Gallery {
                 AccessibilityRole::Button,
                 String::new(),
                 enabled,
-                false,
+                source_selected,
                 false,
             ))
             .on_click(cx.listener(move |app, _, window, cx| {
-                if enabled {
+                if enabled && app.control_available(id) {
                     app.controls[id].focus(window);
                     app.activate(id, window, cx);
                 }
@@ -824,6 +1011,7 @@ impl Gallery {
                     return;
                 }
                 if enabled
+                    && !e.is_held
                     && app.controls[id].is_focused(window)
                     && matches!(e.keystroke.key.as_str(), "enter" | "space")
                 {
@@ -833,8 +1021,97 @@ impl Gallery {
             }))
             .into_any_element()
     }
+    fn control_available(&self, id: &str) -> bool {
+        if self.intro_visible {
+            id.starts_with("intro-")
+        } else if self.rotation.draft.is_some() {
+            id.starts_with("rotation-") && id != "rotation-add"
+        } else {
+            !id.starts_with("intro-") && (!id.starts_with("rotation-") || id == "rotation-add")
+        }
+    }
     fn activate(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.control_available(id) {
+            return;
+        }
+        if id.starts_with("rotation-")
+            && !matches!(id, "rotation-close" | "rotation-details")
+            && self.rotation.command_busy
+        {
+            return;
+        }
+        if let Some(rest) = id.strip_prefix("rotation-remove-") {
+            if let Ok(i) = rest.parse::<usize>()
+                && !self.applying
+                && !self.rotation.command_busy
+                && let Some(d) = &mut self.rotation.draft
+                && i < d.selected.len()
+            {
+                d.selected.remove(i);
+                self.rotation_sync_controls(cx);
+                self.controls["rotation-selected"].focus(window);
+                cx.notify();
+            }
+            return;
+        }
+        for (prefix, up) in [("rotation-up-", true), ("rotation-down-", false)] {
+            if let Some(rest) = id.strip_prefix(prefix) {
+                if let Ok(i) = rest.parse::<usize>()
+                    && !self.applying
+                    && !self.rotation.command_busy
+                    && let Some(d) = &mut self.rotation.draft
+                {
+                    let next = if up { i.saturating_sub(1) } else { i + 1 };
+                    if i < d.selected.len() && next < d.selected.len() {
+                        d.selected.swap(i, next);
+                        cx.notify();
+                    }
+                }
+                return;
+            }
+        }
+        if let Some(rest) = id.strip_prefix("rotation-retry-skipped-") {
+            if let Ok(i) = rest.parse::<usize>()
+                && !self.applying
+                && !self.rotation.pending
+                && let Some((art, _)) = self.rotation.skipped.get(i).cloned()
+            {
+                self.rotation_command(Command::RetrySkipped { id: art.id }, cx);
+                cx.notify();
+            }
+            return;
+        }
         match id {
+            "rotation" => self.rotation_open(window, cx),
+            "rotation-add" => self.rotation_add(cx),
+            "rotation-entire" | "rotation-selected"
+                if !self.applying
+                    && !self.rotation.command_busy
+                    && self.rotation.state != RotationState::Preparing =>
+            {
+                if let Some(d) = &mut self.rotation.draft {
+                    d.source = if id == "rotation-entire" {
+                        RotationSource::EntireGallery
+                    } else {
+                        RotationSource::Selected
+                    };
+                }
+                self.rotation.error = None;
+                cx.notify();
+            }
+            "rotation-details" => {
+                self.rotation.details_open = !self.rotation.details_open;
+                cx.notify();
+            }
+            "rotation-close" => self.rotation_close(window, cx),
+            "rotation-stop-save" => self.rotation_stop_save(cx),
+            "rotation-start" => self.rotation_commit(true, cx),
+            "rotation-save" => self.rotation_commit(false, cx),
+            "rotation-pause" => self.rotation_pause(cx),
+            "rotation-resume" => self.rotation_resume(cx),
+            "rotation-stop" if !self.applying => self.rotation_command(Command::Stop, cx),
+            "rotation-now" => self.rotation_apply(cx),
+            "rotation-retry" => self.rotation_retry(cx),
             "back-to-results" => self.back_to_results(window, cx),
             "intro-motion" => self.toggle_motion(cx),
             "intro-start" => self.close_intro(Outcome::Completed, cx),
@@ -1005,6 +1282,18 @@ impl Gallery {
                 cx,
             ))
             .child(self.button("show-walkthrough", "Guide", !self.applying, cx))
+            .child(self.button(
+                "rotation",
+                match self.rotation.state {
+                    RotationState::Running | RotationState::Applying => "Rotation on",
+                    RotationState::Waiting => "Rotation waiting",
+                    RotationState::Preparing => "Rotation preparing",
+                    RotationState::Paused | RotationState::Failed => "Rotation paused",
+                    RotationState::Stopped => "Rotation",
+                },
+                true,
+                cx,
+            ))
             .child(self.gallery_search(cx))
             .child(self.button(
                 "refresh",
@@ -1273,7 +1562,13 @@ impl Gallery {
                                             && self.last_load_refresh),
                                     cx,
                                 ))
-                                .child(self.button("view-source", "View source", true, cx)),
+                                .child(self.button("view-source", "View source", true, cx))
+                                .child(self.button(
+                                    "rotation-add",
+                                    "Add to rotation",
+                                    !self.applying,
+                                    cx,
+                                )),
                             "hero-actions",
                             0.16,
                         ),
@@ -1400,12 +1695,17 @@ impl Gallery {
                     .tab_stop(
                         !self.applying
                             && !self.intro_visible
+                            && self.rotation.draft.is_none()
                             && self.keyboard_tile.as_ref() == Some(&art.id),
                     )
                     .tab_index(30),
             )
             .tab_index(0)
-            .tab_stop(self.keyboard_tile.as_ref() == Some(&art.id))
+            .tab_stop(
+                self.keyboard_tile.as_ref() == Some(&art.id)
+                    && !self.intro_visible
+                    && self.rotation.draft.is_none(),
+            )
             .w(px(width))
             .flex_none()
             .flex()
@@ -1507,6 +1807,9 @@ impl Gallery {
                 false,
             ))
             .on_click(cx.listener(move |app, _, window, cx| {
+                if app.rotation.draft.is_some() || app.intro_visible {
+                    return;
+                }
                 app.keyboard_tile = Some(click.id.clone());
                 app.tiles[&click.id].focus(window);
                 if app.previews.get(&click.id).is_some_and(|p| p.is_err()) {
@@ -1673,6 +1976,7 @@ impl Gallery {
 impl Render for Gallery {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.intro_visible
+            && self.rotation.draft.is_none()
             && (window.focused(cx).is_none()
                 || self.intro_focus.is_focused(window)
                 || self.controls["intro-start"].is_focused(window)
@@ -1683,6 +1987,20 @@ impl Render for Gallery {
         if !self.navigation_subscribed {
             self.navigation_subscribed = true;
             cx.subscribe_in(
+                &self.rotation_input,
+                window,
+                |app, _, event: &Navigate, window, cx| app.rotation_focus_step(event.0, window, cx),
+            )
+            .detach();
+            cx.subscribe_in(
+                &self.rotation_input,
+                window,
+                |app, _, _: &crate::search_input::Dismiss, window, cx| {
+                    app.rotation_close(window, cx)
+                },
+            )
+            .detach();
+            cx.subscribe_in(
                 &self.search_input,
                 window,
                 |app, _, event: &Navigate, window, cx| app.focus_step(event.0, window, cx),
@@ -1690,8 +2008,25 @@ impl Render for Gallery {
             .detach();
         }
         self.search_input.update(cx, |input, cx| {
-            input.set_tab_enabled(!self.intro_visible, cx)
+            input.set_tab_enabled(!self.intro_visible && self.rotation.draft.is_none(), cx)
         });
+        self.rotation_input.update(cx, |input, cx| {
+            input.set_tab_enabled(
+                self.rotation.draft.is_some()
+                    && !self.applying
+                    && !self.rotation.command_busy
+                    && self.rotation.state != RotationState::Preparing,
+                cx,
+            )
+        });
+        if let Some(id) = self.rotation.reveal.take() {
+            let this = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.rotation_reveal(&id, cx);
+                });
+            });
+        }
         self.ax_nodes.borrow_mut().clear();
         if let Some(receiver) = self.ax_receiver.take() {
             *self.ax.borrow_mut() = AccessibilityBridge::new(window, self.ax_sender.clone());
@@ -1700,6 +2035,21 @@ impl Render for Gallery {
                 .spawn(cx, async move |cx| {
                     while let Ok(action) = receiver.recv().await {
                         let result = this.update_in(cx, |app, window, cx| {
+                            let action_id = match &action {
+                                AccessibilityAction::Press(id)
+                                | AccessibilityAction::SetValue(id, _)
+                                | AccessibilityAction::SetSelection(id, _, _)
+                                | AccessibilityAction::Focus(id) => id,
+                            };
+                            if app.rotation.draft.is_some()
+                                && (!action_id.starts_with("rotation-")
+                                    || action_id == "rotation-add")
+                            {
+                                return;
+                            }
+                            if app.intro_visible && !action_id.starts_with("intro-") {
+                                return;
+                            }
                             match action {
                                 AccessibilityAction::Press(id) => {
                                     if let Some(id) = id.strip_prefix("tile-") {
@@ -1712,20 +2062,32 @@ impl Render for Gallery {
                                     }
                                 }
                                 AccessibilityAction::SetValue(id, value) => {
-                                    if id == "search" {
+                                    if id == "rotation-interval" {
+                                        app.rotation_input
+                                            .update(cx, |input, cx| input.set_value(value, cx));
+                                    } else if id == "search" {
                                         app.search_input
                                             .update(cx, |input, cx| input.set_value(value, cx));
                                     }
                                 }
                                 AccessibilityAction::SetSelection(id, start, length) => {
-                                    if id == "search" {
+                                    if id == "rotation-interval" {
+                                        app.rotation_input.update(cx, |input, cx| {
+                                            input.set_selection(start, length, cx)
+                                        });
+                                    } else if id == "search" {
                                         app.search_input.update(cx, |input, cx| {
                                             input.set_selection(start, length, cx)
                                         });
                                     }
                                 }
                                 AccessibilityAction::Focus(id) => {
-                                    if id == "search" {
+                                    if app.rotation.draft.is_some() {
+                                        app.rotation.reveal = Some(id.clone());
+                                    }
+                                    if id == "rotation-interval" {
+                                        app.rotation_input.focus_handle(cx).focus(window);
+                                    } else if id == "search" {
                                         app.search_input.focus_handle(cx).focus(window);
                                     } else if let Some(id) = id.strip_prefix("tile-") {
                                         if let Some(handle) = app.tiles.get(id) {
@@ -1762,6 +2124,8 @@ impl Render for Gallery {
         let tiles = self.tiles.clone();
         let input = self.search_input.clone();
         let intro_visible = self.intro_visible;
+        let rotation_visible = self.rotation.draft.is_some();
+        let rotation_input = self.rotation_input.clone();
         let navigation_bottom = self.navigation_bottom();
         let width = f32::from(window.viewport_size().width) - 48.;
         self.columns = if width >= 4. * 260. + 48. { 4 } else { 3 };
@@ -1997,6 +2361,9 @@ impl Render for Gallery {
                     .child(self.header(cx)),
             )
             .when(self.intro_visible, |d| d.child(self.intro(window, cx)))
+            .when(self.rotation.draft.is_some(), |d| {
+                d.child(self.rotation_panel(window, cx))
+            })
             .child(
                 gpui::canvas(
                     |_, _, _| {},
@@ -2017,7 +2384,10 @@ impl Render for Gallery {
                                         | "show-new"
                                         | "preferences-error"
                                 ) || node.id.starts_with("catalogue-")
-                                    || node.id.starts_with("intro-");
+                                    || node.id.starts_with("intro-")
+                                    || (node.id.starts_with("rotation-")
+                                        && node.id != "rotation-add")
+                                    || node.id == "rotation";
                                 if !pinned && let Some(bounds) = grid_bounds {
                                     let visible = gpui::Bounds::new(
                                         point(px(0.), px(navigation_bottom)),
@@ -2051,7 +2421,12 @@ impl Render for Gallery {
                                     && n.bounds.size.height > px(0.)
                             });
                             for node in &mut snapshot {
-                                if node.id == "search" {
+                                if node.id == "rotation-interval" {
+                                    node.focused =
+                                        rotation_input.focus_handle(cx).is_focused(window);
+                                    node.selected_range =
+                                        Some(rotation_input.read(cx).utf16_selection());
+                                } else if node.id == "search" {
                                     node.focused = input.focus_handle(cx).is_focused(window);
                                     node.selected_range = Some(input.read(cx).utf16_selection());
                                 } else if let Some(handle) = controls.get(&node.id).or_else(|| {
@@ -2060,10 +2435,18 @@ impl Render for Gallery {
                                     node.focused = handle.is_focused(window);
                                 }
                             }
-                            if intro_visible {
+                            if rotation_visible {
+                                snapshot.retain(|node| {
+                                    node.id.starts_with("rotation-") && node.id != "rotation-add"
+                                });
+                            } else if intro_visible {
                                 snapshot.retain(|node| node.id.starts_with("intro-"));
                             } else {
-                                snapshot.retain(|node| !node.id.starts_with("intro-"));
+                                snapshot.retain(|node| {
+                                    !node.id.starts_with("intro-")
+                                        && (!node.id.starts_with("rotation-")
+                                            || node.id == "rotation-add")
+                                });
                             }
                             bridge.update(snapshot);
                         }
@@ -2133,6 +2516,7 @@ fn control_tab_index(id: &str) -> isize {
         "show-walkthrough" | "intro-motion" => 1,
         "clear-search" => 3,
         "refresh" => 4,
+        "rotation" => 5,
         "show-new" => 10,
         "retry-catalogue" => 11,
         "back-to-results" => 20,
@@ -2140,9 +2524,982 @@ fn control_tab_index(id: &str) -> isize {
         "retry-details" => 22,
         "apply" => 23,
         "view-source" => 24,
+        "rotation-add" => 25,
         "empty-clear-search" => 31,
         "load-more" => 40,
         _ => 50,
+    }
+}
+
+impl Gallery {
+    fn rotation_poll(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let epoch = match this.update(cx, |app, _| {
+                    if app.rotation.command_busy || app.applying {
+                        None
+                    } else {
+                        Some(app.rotation.command_epoch)
+                    }
+                }) {
+                    Ok(value) => value,
+                    Err(_) => break,
+                };
+                if let Some(epoch) = epoch {
+                    let task = cx.background_executor().spawn(async {
+                        rotation_service::request(Command::Status).map_err(|e| format!("{e:#}"))
+                    });
+                    let result = task.await;
+                    if this
+                        .update(cx, |app, cx| {
+                            if app.rotation.command_epoch != epoch
+                                || app.rotation.command_busy
+                                || app.applying
+                            {
+                                return;
+                            }
+                            match result {
+                                Ok(snapshot) => app.rotation.snapshot = snapshot,
+                                Err(error) => app.rotation.unavailable(error),
+                            }
+                            app.rotation_sync_controls(cx);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+        })
+        .detach();
+    }
+    fn rotation_command(&mut self, command: Command, cx: &mut Context<Self>) {
+        if self.rotation.command_busy || self.applying {
+            return;
+        }
+        self.rotation.command_busy = true;
+        self.rotation.command_epoch += 1;
+        let epoch = self.rotation.command_epoch;
+        let task = cx.background_executor().spawn(async move {
+            let result = pinacora::rotation_service_manager::ensure_running()
+                .and_then(|_| rotation_service::request(command));
+            match result {
+                Ok(snapshot) => Ok(snapshot),
+                Err(error) => match rotation_service::request(Command::Status) {
+                    Ok(mut snapshot) => {
+                        snapshot.error = Some(format!("{error:#}"));
+                        Ok(snapshot)
+                    }
+                    Err(_) => Err(format!("{error:#}")),
+                },
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |app, cx| {
+                if app.rotation.command_epoch != epoch {
+                    return;
+                }
+                app.rotation.command_busy = false;
+                match result {
+                    Ok(snapshot) => {
+                        app.rotation.snapshot = snapshot;
+                    }
+                    Err(error) => {
+                        app.rotation.unavailable(error.clone());
+                        app.rotation.error = Some(error);
+                    }
+                }
+                app.rotation_sync_controls(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn rotation_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.intro_visible {
+            return;
+        }
+        self.rotation.details_open = false;
+        self.rotation.draft = Some(self.rotation.prefs.clone());
+        self.rotation.minutes = self.rotation.prefs.minutes.to_string();
+        let value = self.rotation.minutes.clone();
+        self.rotation_input
+            .update(cx, |input, cx| input.set_value(value, cx));
+        self.rotation.reveal = None;
+        self.rotation_sync_controls(cx);
+        self.rotation.scroll.set_offset(point(px(0.), px(0.)));
+        // Changing focus during the opening Enter can deliver that same event to
+        // the source control. Wait until the next frame and focus the saved source.
+        let this = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            let _ = this.update(cx, |app, cx| {
+                if let Some(draft) = &app.rotation.draft {
+                    let id = if draft.source == RotationSource::EntireGallery {
+                        "rotation-entire"
+                    } else {
+                        "rotation-selected"
+                    };
+                    app.controls[id].focus(window);
+                    app.rotation.reveal = Some(id.into());
+                    cx.notify();
+                }
+            });
+        });
+        cx.notify();
+    }
+    fn rotation_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rotation.draft = None;
+        self.rotation.reveal = None;
+        self.controls["rotation"].focus(window);
+        cx.notify();
+    }
+    fn rotation_sync_controls(&mut self, cx: &mut Context<Self>) {
+        let count = self.rotation.draft.as_ref().map_or(0, |d| d.selected.len());
+        for i in 0..count {
+            for action in ["remove", "up", "down"] {
+                self.controls
+                    .entry(format!("rotation-{action}-{i}"))
+                    .or_insert_with(|| cx.focus_handle().tab_stop(true));
+            }
+        }
+        for i in 0..self.rotation.skipped.len() {
+            self.controls
+                .entry(format!("rotation-retry-skipped-{i}"))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
+    }
+    fn rotation_add(&mut self, cx: &mut Context<Self>) {
+        if self.rotation.command_busy || self.applying {
+            return;
+        }
+        let art = self
+            .all_artworks()
+            .find(|a| Some(&a.id) == self.selected.as_ref())
+            .cloned();
+        if let Some(art) = art {
+            let mut prefs = self.rotation.prefs.clone();
+            if prefs.selected.iter().any(|a| a.id == art.id) {
+                self.status = "Already in your rotation collection.".into();
+            } else if prefs.selected.len() < rotation::MAX_ARTWORKS {
+                prefs.selected.push(art);
+                self.rotation_command(Command::Save { prefs }, cx);
+            }
+            cx.notify();
+        }
+    }
+    fn rotation_pause(&mut self, cx: &mut Context<Self>) {
+        self.rotation_command(Command::Pause, cx);
+    }
+    fn rotation_stop_save(&mut self, cx: &mut Context<Self>) {
+        if self.applying
+            || self.rotation.command_busy
+            || self.rotation.state == RotationState::Preparing
+        {
+            return;
+        }
+        let Some(mut prefs) = self.rotation.draft.clone() else {
+            return;
+        };
+        let Ok(minutes) = rotation::minutes(&self.rotation.minutes) else {
+            return;
+        };
+        prefs.minutes = minutes;
+        prefs.configured = false;
+        self.rotation_command(Command::Save { prefs }, cx);
+    }
+    fn rotation_commit(&mut self, start: bool, cx: &mut Context<Self>) {
+        if self.applying
+            || self.rotation.command_busy
+            || self.rotation.state == RotationState::Preparing
+        {
+            return;
+        }
+        let Some(mut prefs) = self.rotation.draft.clone() else {
+            return;
+        };
+        let validation = rotation::minutes(&self.rotation.minutes).and_then(|minutes| {
+            prefs.minutes = minutes;
+            prefs.configured = true;
+            prefs.validate()
+        });
+        if let Err(error) = validation {
+            self.rotation.error = Some(error.to_string());
+            cx.notify();
+            return;
+        }
+        if let Some(error) = pinacora::platform::support_error() {
+            self.rotation.error = Some(error);
+            cx.notify();
+            return;
+        }
+        let command = if start {
+            Command::Start { prefs }
+        } else {
+            Command::Save { prefs }
+        };
+        self.rotation_command(command, cx);
+    }
+    fn rotation_next(&self) -> Option<&Artwork> {
+        self.rotation.next.as_ref()
+    }
+    fn rotation_resume(&mut self, cx: &mut Context<Self>) {
+        self.rotation_command(Command::Resume, cx);
+    }
+    fn rotation_apply(&mut self, cx: &mut Context<Self>) {
+        self.rotation_command(Command::ChangeNow, cx);
+    }
+    fn rotation_retry(&mut self, cx: &mut Context<Self>) {
+        self.rotation_command(Command::Retry, cx);
+    }
+    fn rotation_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "escape" {
+            cx.stop_propagation();
+            self.rotation_close(window, cx);
+        } else if event.keystroke.key == "tab" {
+            cx.stop_propagation();
+            self.rotation_focus_step(event.keystroke.modifiers.shift, window, cx);
+        }
+    }
+    fn rotation_focus_ids(&self) -> Vec<String> {
+        let busy = self.applying
+            || self.rotation.command_busy
+            || self.rotation.state == RotationState::Preparing;
+        let mut ids = vec![];
+        if self.rotation.prefs.configured || self.rotation.pending {
+            if (self.rotation.wants_running || self.rotation.pending)
+                && !self.applying
+                && !self.rotation.command_busy
+            {
+                ids.push("rotation-pause".into());
+            } else if self.rotation.prefs.configured && !self.rotation.pending && !busy {
+                ids.push("rotation-resume".into());
+            }
+            if self.rotation.wants_running && self.rotation.prepared_path.is_some() && !busy {
+                ids.push("rotation-now".into());
+            }
+            if self.rotation.error.is_some() && !busy {
+                ids.push("rotation-retry".into());
+            }
+        }
+        if !busy {
+            ids.extend([
+                "rotation-entire".into(),
+                "rotation-selected".into(),
+                "rotation-interval".into(),
+            ]);
+            if let Some(draft) = &self.rotation.draft
+                && draft.source == RotationSource::Selected
+            {
+                for i in 0..draft.selected.len() {
+                    if i > 0 {
+                        ids.push(format!("rotation-up-{i}"));
+                    }
+                    if i + 1 < draft.selected.len() {
+                        ids.push(format!("rotation-down-{i}"));
+                    }
+                    ids.push(format!("rotation-remove-{i}"));
+                }
+            }
+            if !self.rotation.pending {
+                for i in 0..self.rotation.skipped.len() {
+                    ids.push(format!("rotation-retry-skipped-{i}"));
+                }
+            }
+        }
+        ids.push("rotation-details".into());
+        if self.rotation.prefs.configured
+            && self.rotation.state != RotationState::Stopped
+            && !busy
+            && !self.rotation.pending
+        {
+            ids.push("rotation-stop".into());
+        }
+        ids.push("rotation-close".into());
+        if let Some(draft) = &self.rotation.draft
+            && !busy
+            && rotation::minutes(&self.rotation.minutes).is_ok()
+        {
+            let valid = (draft.source != RotationSource::Selected || draft.selected.len() >= 2)
+                && pinacora::platform::support_error().is_none();
+            if self.rotation_dirty()
+                && draft.source == RotationSource::Selected
+                && draft.selected.len() < 2
+            {
+                ids.push("rotation-stop-save".into());
+            } else if self.rotation_dirty() && self.rotation.prefs.configured && valid {
+                ids.push("rotation-save".into());
+            }
+            if (!self.rotation.prefs.configured || self.rotation.state == RotationState::Stopped)
+                && valid
+            {
+                ids.push("rotation-start".into());
+            }
+        }
+        ids
+    }
+    fn rotation_focus_step(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let ids = self.rotation_focus_ids();
+        let current = ids.iter().position(|id| {
+            if id == "rotation-interval" {
+                self.rotation_input.focus_handle(cx).is_focused(window)
+            } else {
+                self.controls.get(id).is_some_and(|h| h.is_focused(window))
+            }
+        });
+        let next = match current {
+            Some(i) if reverse => (i + ids.len() - 1) % ids.len(),
+            Some(i) => (i + 1) % ids.len(),
+            None => 0,
+        };
+        self.rotation.reveal = Some(ids[next].clone());
+        if ids[next] == "rotation-interval" {
+            self.rotation_input.focus_handle(cx).focus(window);
+        } else {
+            self.controls[&ids[next]].focus(window);
+        }
+        cx.notify();
+    }
+    fn rotation_reveal(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.rotation.draft.is_none()
+            || matches!(
+                id,
+                "rotation-close" | "rotation-save" | "rotation-start" | "rotation-stop-save"
+            )
+        {
+            return;
+        }
+        let viewport = self.rotation.scroll.bounds();
+        let nodes = self.ax_nodes.borrow();
+        let Some(node) = nodes.iter().find(|node| node.id == id) else {
+            return;
+        };
+        let top = node.bounds.top();
+        let mut bottom = node.bounds.bottom();
+        if id == "rotation-interval"
+            && let Some(error) = nodes.iter().find(|node| node.id == "rotation-invalid")
+        {
+            bottom = bottom.max(error.bounds.bottom());
+        }
+        let mut offset = self.rotation.scroll.offset();
+        if top < viewport.top() + px(12.) {
+            offset.y += viewport.top() + px(12.) - top;
+        } else if bottom > viewport.bottom() - px(12.) {
+            offset.y -= bottom - viewport.bottom() + px(12.);
+        }
+        offset.y = offset
+            .y
+            .clamp(-self.rotation.scroll.max_offset().height, px(0.));
+        if offset != self.rotation.scroll.offset() {
+            self.rotation.scroll.set_offset(offset);
+            cx.notify();
+        }
+    }
+    fn rotation_row_button(
+        &self,
+        id: String,
+        label: String,
+        enabled: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let key = id.clone();
+        let click = id.clone();
+        let handle = self.controls[&id].clone();
+        div()
+            .relative()
+            .id(SharedString::from(id.clone()))
+            .track_focus(&handle.clone().tab_stop(enabled))
+            .tab_stop(enabled)
+            .px_3()
+            .py_2()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(RAISED))
+            .bg(rgb(SURFACE))
+            .text_xs()
+            .opacity(if enabled { 1. } else { 0.4 })
+            .focus(|s| s.border_color(rgb(ACCENT)))
+            .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(rgb(RAISED))))
+            .child(label.clone())
+            .child(self.semantic(
+                id,
+                label,
+                AccessibilityRole::Button,
+                String::new(),
+                enabled,
+                false,
+                false,
+            ))
+            .on_click(cx.listener(move |app, _, window, cx| {
+                if enabled {
+                    app.activate(&click, window, cx);
+                }
+            }))
+            .on_key_down(cx.listener(move |app, e: &KeyDownEvent, window, cx| {
+                if enabled
+                    && !e.is_held
+                    && handle.is_focused(window)
+                    && matches!(e.keystroke.key.as_str(), "enter" | "space")
+                {
+                    cx.stop_propagation();
+                    app.activate(&key, window, cx);
+                }
+            }))
+            .into_any_element()
+    }
+    fn rotation_dirty(&self) -> bool {
+        self.rotation.draft.as_ref().is_some_and(|draft| {
+            draft.source != self.rotation.prefs.source
+                || rotation::minutes(&self.rotation.minutes).ok()
+                    != Some(self.rotation.prefs.minutes)
+                || !draft.selected.iter().map(|art| &art.id).eq(self
+                    .rotation
+                    .prefs
+                    .selected
+                    .iter()
+                    .map(|art| &art.id))
+        })
+    }
+
+    fn rotation_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let Some(draft) = &self.rotation.draft else {
+            return div().into_any_element();
+        };
+        let busy = self.applying
+            || self.rotation.command_busy
+            || self.rotation.state == RotationState::Preparing;
+        let valid = rotation::minutes(&self.rotation.minutes).is_ok()
+            && (draft.source != RotationSource::Selected || draft.selected.len() >= 2)
+            && pinacora::platform::support_error().is_none();
+        let mut body =
+            div()
+                .w_full()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .p_6()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .w(px(44.))
+                                .h(px(44.))
+                                .flex_none()
+                                .rounded(px(12.))
+                                .bg(rgba(0x0a84ff18))
+                                .border_1()
+                                .border_color(rgba(0x0a84ff30))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(28.))
+                                .text_color(rgb(0x79b7ff))
+                                .child("↻"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .relative()
+                                        .text_size(px(22.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Wallpaper rotation")
+                                        .child(self.semantic(
+                                            "rotation-title".into(),
+                                            "Wallpaper rotation".into(),
+                                            AccessibilityRole::StaticText,
+                                            String::new(),
+                                            true,
+                                            false,
+                                            false,
+                                        )),
+                                )
+                                .when(
+                                    !self.rotation.prefs.configured && !self.rotation.pending,
+                                    |d| {
+                                        d.child(div().text_color(rgb(MUTED)).child(self.text(
+                                            "rotation-intro",
+                                            "Choose artwork and a schedule.",
+                                        )))
+                                    },
+                                ),
+                        ),
+                )
+                .when(
+                    self.rotation.prefs.configured || self.rotation.pending,
+                    |d| d.child(self.rotation_live_card(cx)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .p_4()
+                        .rounded(px(14.))
+                        .bg(rgb(0x18181b))
+                        .border_1()
+                        .border_color(rgb(RAISED))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(self.text("rotation-source-label", "Artwork"))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_1()
+                                        .p_1()
+                                        .rounded(px(10.))
+                                        .bg(rgb(CANVAS))
+                                        .child(self.button(
+                                            "rotation-entire",
+                                            "Entire gallery",
+                                            !busy,
+                                            cx,
+                                        ))
+                                        .child(self.button(
+                                            "rotation-selected",
+                                            "Selected artworks",
+                                            !busy,
+                                            cx,
+                                        )),
+                                )
+                                .child(div().text_color(rgb(MUTED)).child(self.text(
+                                    "rotation-source-summary",
+                                    if draft.source == RotationSource::EntireGallery {
+                                        "Shuffle across the gallery."
+                                    } else {
+                                        "Play your collection in order."
+                                    },
+                                ))),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .pt_4()
+                                .border_t_1()
+                                .border_color(rgb(RAISED))
+                                .child(
+                                    div().flex_1().child(
+                                        self.text("rotation-interval-label", "Change every"),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .relative()
+                                        .w(px(76.))
+                                        .flex_none()
+                                        .child(self.rotation_input.clone())
+                                        .child(self.semantic(
+                                            "rotation-interval".into(),
+                                            "Change every, in minutes".into(),
+                                            AccessibilityRole::TextField,
+                                            self.rotation.minutes.clone(),
+                                            !busy,
+                                            false,
+                                            false,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_sm()
+                                        .text_color(rgb(MUTED))
+                                        .child("minutes"),
+                                ),
+                        ),
+                );
+        if draft.source != self.rotation.prefs.source && self.rotation.prefs.configured {
+            body = body.child(self.text(
+                "rotation-save-consequence",
+                "Saving this source will pause rotation.",
+            ));
+        } else if self.rotation_dirty() && self.rotation.wants_running {
+            body = body.child(self.text(
+                "rotation-save-consequence",
+                "Saving changes starts a fresh countdown.",
+            ));
+        }
+        if rotation::minutes(&self.rotation.minutes).is_err() {
+            body = body.child(
+                div()
+                    .text_color(rgb(0xf0b2ac))
+                    .child(self.text("rotation-invalid", "Enter a whole number from 1 to 1,440.")),
+            );
+        }
+        if draft.source == RotationSource::Selected {
+            body = body.child(self.text(
+                "rotation-selected-count",
+                format!("{} selected artworks", draft.selected.len()),
+            ));
+            if draft.selected.len() < 2 {
+                body = body.child(self.text(
+                    "rotation-selected-help",
+                    "Add at least 2 artworks using Add to rotation while browsing.",
+                ));
+            }
+            for (i, art) in draft.selected.iter().enumerate() {
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_3()
+                        .rounded(px(10.))
+                        .bg(rgb(CANVAS))
+                        .child(self.text(
+                            &format!("rotation-art-{i}"),
+                            format!("{}. {} · {}", i + 1, art.title(), art.artist()),
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(self.rotation_row_button(
+                                    format!("rotation-up-{i}"),
+                                    "Move up".into(),
+                                    !busy && i > 0,
+                                    cx,
+                                ))
+                                .child(self.rotation_row_button(
+                                    format!("rotation-down-{i}"),
+                                    "Move down".into(),
+                                    !busy && i + 1 < draft.selected.len(),
+                                    cx,
+                                ))
+                                .child(self.rotation_row_button(
+                                    format!("rotation-remove-{i}"),
+                                    "Remove".into(),
+                                    !busy,
+                                    cx,
+                                )),
+                        ),
+                );
+            }
+        }
+        if let Some(error) = &self.rotation.error
+            && !self.rotation.prefs.configured
+            && !self.rotation.pending
+        {
+            body = body.child(
+                div()
+                    .text_color(rgb(0xf0b2ac))
+                    .child(self.text("rotation-error", error.clone())),
+            );
+        }
+        if let Some(error) = pinacora::platform::support_error() {
+            body = body.child(self.text("rotation-platform", error));
+        }
+        for (i, (art, error)) in self.rotation.skipped.iter().enumerate() {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(self.text(
+                        &format!("rotation-skipped-{i}"),
+                        format!("Skipped {} · {error}", art.title()),
+                    ))
+                    .child(self.rotation_row_button(
+                        format!("rotation-retry-skipped-{i}"),
+                        format!("Retry {}", art.title()),
+                        !busy && !self.rotation.pending,
+                        cx,
+                    )),
+            );
+        }
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().text_color(rgb(MUTED)).child(self.text(
+                    "rotation-description",
+                    "Keeps running when Pinacora is closed.",
+                )))
+                .child(div().flex().child(self.button(
+                    "rotation-details",
+                    if self.rotation.details_open {
+                        "How rotation works  ▾"
+                    } else {
+                        "How rotation works  ›"
+                    },
+                    true,
+                    cx,
+                ))),
+        );
+        if self.rotation.details_open {
+            body = body.child(div().flex().flex_col().gap_3().text_sm().text_color(rgb(MUTED))
+                .child(self.text("rotation-source-copy", if draft.source == RotationSource::EntireGallery {
+                    "Shuffle across the entire gallery, independently of your search. Artwork is not repeated within a cycle; newly discovered artwork joins the next cycle."
+                } else {
+                    "Selected artworks play in the order above. Use Add to rotation while browsing to grow your collection."
+                }))
+                .child(self.text("rotation-interval-help", "Use whole minutes from 1 to 1,440. Resume starts a fresh countdown. Saving an interval keeps paused rotation paused."))
+                .child(self.text("rotation-cache-copy", "Pinacora downloads the next wallpaper in advance. If it is not ready, the current wallpaper stays. Downloaded originals remain on this computer."))
+                .child(self.text("rotation-login-copy", "The background service restores active rotation at login. Pause suspends changes; Stop turns rotation off and keeps your collection.")));
+            if let Some(eligible) = self.rotation.eligible {
+                body = body
+                    .child(self.text("rotation-eligible", format!("{eligible} eligible artworks")));
+            }
+            if let Some(error) = &self.rotation.cache_diagnostic {
+                body = body
+                    .child(self.text("rotation-cache-error", format!("Catalogue cache: {error}")));
+            }
+        }
+        let mut footer = div()
+            .flex_none()
+            .px_6()
+            .py_4()
+            .bg(rgb(0x1b1b1e))
+            .border_t_1()
+            .border_color(rgb(RAISED))
+            .flex()
+            .gap_2()
+            .items_center();
+        if self.rotation.prefs.configured && self.rotation.state != RotationState::Stopped {
+            footer = footer.child(self.button(
+                "rotation-stop",
+                "Stop rotation",
+                !busy && !self.rotation.pending,
+                cx,
+            ));
+        }
+        footer = footer.child(div().flex_1()).child(self.button(
+            "rotation-close",
+            if self.rotation_dirty() {
+                "Cancel"
+            } else {
+                "Close"
+            },
+            true,
+            cx,
+        ));
+        if self.rotation_dirty()
+            && draft.source == RotationSource::Selected
+            && draft.selected.len() < 2
+        {
+            footer = footer.child(self.button(
+                "rotation-stop-save",
+                "Stop rotation and save",
+                !busy && rotation::minutes(&self.rotation.minutes).is_ok(),
+                cx,
+            ));
+        } else if self.rotation_dirty() && self.rotation.prefs.configured {
+            footer = footer.child(self.button("rotation-save", "Save changes", valid && !busy, cx));
+        }
+        if !self.rotation.prefs.configured || self.rotation.state == RotationState::Stopped {
+            footer =
+                footer.child(self.button("rotation-start", "Start rotation", valid && !busy, cx));
+        }
+        div()
+            .id("rotation-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(rgba(0x000000bb))
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_6()
+            .on_key_down(cx.listener(Self::rotation_key))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .w(px(560.))
+                    .max_w_full()
+                    .max_h(px(f32::from(window.viewport_size().height) - 48.))
+                    .bg(rgb(SURFACE))
+                    .rounded(px(16.))
+                    .border_1()
+                    .border_color(rgb(0x3a3a40))
+                    .shadow(vec![BoxShadow {
+                        color: rgba(0x00000066).into(),
+                        offset: point(px(0.), px(16.)),
+                        blur_radius: px(48.),
+                        spread_radius: px(0.),
+                    }])
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("rotation-content")
+                            .min_h_0()
+                            .w_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.rotation.scroll)
+                            .child(body),
+                    )
+                    .child(footer),
+            )
+            .into_any_element()
+    }
+    fn rotation_live_card(&self, cx: &Context<Self>) -> AnyElement {
+        let status_color = match self.rotation.state {
+            RotationState::Running => 0x82cca4,
+            RotationState::Failed => 0xf0b2ac,
+            RotationState::Paused | RotationState::Stopped => 0xc0b7a7,
+            _ => 0x79b7ff,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(7.))
+                                    .h(px(7.))
+                                    .flex_none()
+                                    .rounded_full()
+                                    .bg(rgb(status_color)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_color(rgb(status_color))
+                                    .child(self.text("rotation-status", self.rotation_label())),
+                            ),
+                    )
+                    .child(self.rotation_actions(cx)),
+            )
+            .when(self.rotation.wants_running && !self.rotation.pending, |d| {
+                if let Some(next) = self.rotation_next() {
+                    d.child(div().text_sm().text_color(rgb(MUTED)).child(self.text(
+                        "rotation-next",
+                        format!("Next: {} · {}", next.title(), next.artist()),
+                    )))
+                } else {
+                    d
+                }
+            })
+            .when_some(self.rotation.error.as_ref(), |d, error| {
+                d.child(
+                    div()
+                        .text_color(rgb(0xf0b2ac))
+                        .child(self.text("rotation-live-error", error.clone())),
+                )
+            })
+            .when(
+                !self.rotation.notice.is_empty()
+                    && self.rotation.notice
+                        != "Rotation continues after closing Pinacora. Pause or stop it here.",
+                |d| {
+                    d.child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(MUTED))
+                            .child(self.text("rotation-notice", self.rotation.notice.clone())),
+                    )
+                },
+            )
+            .into_any_element()
+    }
+    fn rotation_actions(&self, cx: &Context<Self>) -> AnyElement {
+        let busy = self.applying
+            || self.rotation.command_busy
+            || self.rotation.state == RotationState::Preparing;
+        let mut actions = div().flex().flex_wrap().gap_2();
+        if self.rotation.wants_running || self.rotation.pending {
+            actions = actions.child(self.button(
+                "rotation-pause",
+                if self.rotation.pending {
+                    "Cancel preparation"
+                } else {
+                    "Pause"
+                },
+                !self.applying && !self.rotation.command_busy,
+                cx,
+            ));
+        } else if self.rotation.prefs.configured {
+            actions = actions.child(self.button(
+                "rotation-resume",
+                "Resume",
+                !busy && !self.rotation.pending,
+                cx,
+            ));
+        }
+        if self.rotation.wants_running {
+            actions = actions.child(self.button(
+                "rotation-now",
+                "Change now",
+                !busy && self.rotation.prepared_path.is_some() && self.rotation.wants_running,
+                cx,
+            ));
+        }
+        if self.rotation.error.is_some() {
+            actions = actions.child(self.button(
+                "rotation-retry",
+                if self.rotation.pending {
+                    "Retry preparation"
+                } else if self.rotation.state == RotationState::Failed {
+                    "Retry change"
+                } else {
+                    "Retry now"
+                },
+                !busy && !self.rotation.command_busy,
+                cx,
+            ));
+        }
+        actions.into_any_element()
+    }
+    fn rotation_label(&self) -> String {
+        match self.rotation.state {
+            RotationState::Stopped => "Off".into(),
+            RotationState::Paused => "Paused".into(),
+            RotationState::Preparing => "Preparing rotation…".into(),
+            RotationState::Waiting => {
+                if self.rotation.pending {
+                    "Preparing next wallpaper · your current wallpaper stays in place".into()
+                } else {
+                    "Waiting for internet · your current wallpaper stays in place".into()
+                }
+            }
+            RotationState::Applying => "Applying wallpaper…".into(),
+            RotationState::Failed => if self.rotation.pending {
+                "Rotation paused · preparation failed"
+            } else {
+                "Rotation paused · change failed"
+            }
+            .into(),
+            RotationState::Running => {
+                let remaining = self
+                    .rotation
+                    .deadline
+                    .and_then(|deadline| deadline.duration_since(std::time::SystemTime::now()).ok())
+                    .unwrap_or_default()
+                    .as_secs();
+                format!("Next change in {}:{:02}", remaining / 60, remaining % 60)
+            }
+        }
     }
 }
 
