@@ -48,6 +48,8 @@ Older releases retain the Reframed name.
 
 Search by title or artist, preview an artwork, and choose **Set wallpaper**. **View source** opens its gallery page with attribution. Browsing and downloads need internet access.
 
+Rotation is unreleased source-build behavior. Released v0.3.0 does not include it.
+
 On macOS 14 or newer, wallpaper changes apply to all Desktops. On macOS 12 and 13, they apply to connected displays in the current Desktop. On Hyprland, they apply to connected monitors for the current session.
 
 The macOS all-Desktops method uses an undocumented wallpaper store, saves a backup, and restarts the wallpaper service. See [Privacy](PRIVACY.md) for details and local storage information.
@@ -59,3 +61,5 @@ Reframed Gallery's [FAQ](https://www.reframed.gallery/faq) permits personal wall
 The software and original project assets use the [MIT license](LICENSE). This license does not grant rights to gallery images.
 
 [Privacy](PRIVACY.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
+
+Developer docs: [Code map](AGENTS.md) · [Troubleshooting](docs/troubleshooting.md) · [Rotation](docs/rotation.md)

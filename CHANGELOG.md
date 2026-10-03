@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add entire-gallery and ordered selected-artwork rotation with minute intervals, pause/resume, immediate changes, and retry controls.
+- Prepare the first wallpaper using gallery pagination, cache complete catalogue metadata, and retain shown history across restarts and source changes.
+- Run rotation in a per-user background service after the GUI closes, with graphical-login registration on Linux and macOS.
+- Pause rotation for manual wallpaper application and retain the current wallpaper when preparation fails.
+
+See [current checkout behavior](docs/rotation.md) for scheduling, bounded retries, storage side effects, and platform details. These changes are not part of released v0.3.0.
+
 ## 0.3.0 — Pinacora
 
 - Rename the app to Pinacora, with updated launcher and transparent in-app artwork icons.
