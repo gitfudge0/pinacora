@@ -132,7 +132,39 @@ impl Rotation {
         self.notice = "Use Resume or Start rotation to reconnect the background service.".into();
     }
 }
+#[derive(Default)]
+struct Updates {
+    visible: bool,
+    checking: bool,
+    installing: bool,
+    checked: bool,
+    release: Option<pinacora::updater::Release>,
+    error: Option<String>,
+}
+impl Updates {
+    fn begin_check(&mut self) -> bool {
+        if self.checking || self.installing {
+            return false;
+        }
+        self.checking = true;
+        self.error = None;
+        true
+    }
+    fn checked(&mut self, result: Result<Option<pinacora::updater::Release>, String>) {
+        self.checking = false;
+        match result {
+            Ok(release) => {
+                self.release = release;
+                self.checked = true;
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
+}
 pub struct Gallery {
+    updates: Updates,
+    updates_focus: FocusHandle,
     rotation: Rotation,
     rotation_input: Entity<TextInput>,
     ax: Rc<RefCell<Option<AccessibilityBridge>>>,
@@ -217,6 +249,10 @@ impl Gallery {
         .detach();
         cx.observe(&search_input, |_, _, cx| cx.notify()).detach();
         let controls = [
+            "updates",
+            "updates-check",
+            "updates-install",
+            "updates-close",
             "rotation",
             "rotation-add",
             "rotation-entire",
@@ -252,6 +288,8 @@ impl Gallery {
         .map(|id| (id.to_owned(), cx.focus_handle().tab_stop(true)))
         .collect();
         let mut app = Self {
+            updates: Updates::default(),
+            updates_focus: cx.focus_handle(),
             rotation: Rotation::new(),
             rotation_input,
             ax: Rc::new(RefCell::new(None)),
@@ -307,6 +345,7 @@ impl Gallery {
             intro_focus: cx.focus_handle(),
             intro_save_error: None,
         };
+        app.updates_poll(cx);
         app.rotation_poll(cx);
         app.load(true, cx);
         app
@@ -714,6 +753,10 @@ impl Gallery {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.updates.visible {
+            self.updates_key(e, window, cx);
+            return matches!(e.keystroke.key.as_str(), "tab" | "escape");
+        }
         if self.rotation.draft.is_some() {
             self.rotation_key(e, window, cx);
             return matches!(e.keystroke.key.as_str(), "tab" | "escape");
@@ -750,6 +793,10 @@ impl Gallery {
         false
     }
     fn focus_step(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.updates.visible {
+            self.updates_focus_step(reverse, window, cx);
+            return;
+        }
         if self.rotation.draft.is_some() {
             self.rotation_focus_step(reverse, window, cx);
             return;
@@ -788,7 +835,11 @@ impl Gallery {
         cx.notify();
     }
     fn open_result(&mut self, art: Artwork, window: &mut Window, cx: &mut Context<Self>) {
-        if self.applying || self.rotation.draft.is_some() || self.intro_visible {
+        if self.updates.visible
+            || self.applying
+            || self.rotation.draft.is_some()
+            || self.intro_visible
+        {
             return;
         }
         self.results_offset = self.grid_scroll.offset();
@@ -891,7 +942,7 @@ impl Gallery {
         let ax_label = label.to_string();
         let primary = matches!(
             id,
-            "apply" | "intro-start" | "rotation-start" | "rotation-save"
+            "apply" | "intro-start" | "rotation-start" | "rotation-save" | "updates-install"
         ) || (id == "rotation-resume" && !self.rotation_dirty());
         let source_button = matches!(id, "rotation-entire" | "rotation-selected");
         let source_selected = self.rotation.draft.as_ref().is_some_and(|draft| {
@@ -937,7 +988,12 @@ impl Gallery {
             .when(
                 matches!(
                     id,
-                    "motion-toggle" | "show-walkthrough" | "rotation" | "refresh" | "clear-search"
+                    "motion-toggle"
+                        | "show-walkthrough"
+                        | "rotation"
+                        | "refresh"
+                        | "clear-search"
+                        | "updates"
                 ),
                 |d| {
                     d.h(px(36.))
@@ -1022,7 +1078,11 @@ impl Gallery {
             .into_any_element()
     }
     fn control_available(&self, id: &str) -> bool {
-        if self.intro_visible {
+        if self.updates.visible {
+            id.starts_with("updates-")
+        } else if id.starts_with("updates-") {
+            false
+        } else if self.intro_visible {
             id.starts_with("intro-")
         } else if self.rotation.draft.is_some() {
             id.starts_with("rotation-") && id != "rotation-add"
@@ -1082,6 +1142,10 @@ impl Gallery {
             return;
         }
         match id {
+            "updates" => self.updates_open(window, cx),
+            "updates-check" => self.updates_check(cx),
+            "updates-install" => self.updates_install(cx),
+            "updates-close" => self.updates_close(window, cx),
             "rotation" => self.rotation_open(window, cx),
             "rotation-add" => self.rotation_add(cx),
             "rotation-entire" | "rotation-selected"
@@ -1292,6 +1356,16 @@ impl Gallery {
                     RotationState::Stopped => "Rotation",
                 },
                 true,
+                cx,
+            ))
+            .child(self.button(
+                "updates",
+                if self.updates.release.is_some() {
+                    "Update available"
+                } else {
+                    "Updates"
+                },
+                !self.applying,
                 cx,
             ))
             .child(self.gallery_search(cx))
@@ -1694,6 +1768,7 @@ impl Gallery {
                     .clone()
                     .tab_stop(
                         !self.applying
+                            && !self.updates.visible
                             && !self.intro_visible
                             && self.rotation.draft.is_none()
                             && self.keyboard_tile.as_ref() == Some(&art.id),
@@ -1703,6 +1778,7 @@ impl Gallery {
             .tab_index(0)
             .tab_stop(
                 self.keyboard_tile.as_ref() == Some(&art.id)
+                    && !self.updates.visible
                     && !self.intro_visible
                     && self.rotation.draft.is_none(),
             )
@@ -1807,7 +1883,7 @@ impl Gallery {
                 false,
             ))
             .on_click(cx.listener(move |app, _, window, cx| {
-                if app.rotation.draft.is_some() || app.intro_visible {
+                if app.updates.visible || app.rotation.draft.is_some() || app.intro_visible {
                     return;
                 }
                 app.keyboard_tile = Some(click.id.clone());
@@ -1975,7 +2051,8 @@ impl Gallery {
 }
 impl Render for Gallery {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.intro_visible
+        if !self.updates.visible
+            && !self.intro_visible
             && self.rotation.draft.is_none()
             && (window.focused(cx).is_none()
                 || self.intro_focus.is_focused(window)
@@ -2008,11 +2085,15 @@ impl Render for Gallery {
             .detach();
         }
         self.search_input.update(cx, |input, cx| {
-            input.set_tab_enabled(!self.intro_visible && self.rotation.draft.is_none(), cx)
+            input.set_tab_enabled(
+                !self.updates.visible && !self.intro_visible && self.rotation.draft.is_none(),
+                cx,
+            )
         });
         self.rotation_input.update(cx, |input, cx| {
             input.set_tab_enabled(
-                self.rotation.draft.is_some()
+                !self.updates.visible
+                    && self.rotation.draft.is_some()
                     && !self.applying
                     && !self.rotation.command_busy
                     && self.rotation.state != RotationState::Preparing,
@@ -2041,13 +2122,20 @@ impl Render for Gallery {
                                 | AccessibilityAction::SetSelection(id, _, _)
                                 | AccessibilityAction::Focus(id) => id,
                             };
-                            if app.rotation.draft.is_some()
+                            if app.updates.visible && !action_id.starts_with("updates-") {
+                                return;
+                            }
+                            if !app.updates.visible
+                                && app.rotation.draft.is_some()
                                 && (!action_id.starts_with("rotation-")
                                     || action_id == "rotation-add")
                             {
                                 return;
                             }
-                            if app.intro_visible && !action_id.starts_with("intro-") {
+                            if !app.updates.visible
+                                && app.intro_visible
+                                && !action_id.starts_with("intro-")
+                            {
                                 return;
                             }
                             match action {
@@ -2123,6 +2211,7 @@ impl Render for Gallery {
         let controls = self.controls.clone();
         let tiles = self.tiles.clone();
         let input = self.search_input.clone();
+        let updates_visible = self.updates.visible;
         let intro_visible = self.intro_visible;
         let rotation_visible = self.rotation.draft.is_some();
         let rotation_input = self.rotation_input.clone();
@@ -2207,7 +2296,13 @@ impl Render for Gallery {
                 app.prioritize_previews(cx);
             });
         });
-        if self.intro_visible && !self.intro_focus.contains_focused(window, cx) {
+        if self.updates.visible && !self.updates_focus.contains_focused(window, cx) {
+            self.updates_focus_step(false, window, cx);
+        }
+        if !self.updates.visible
+            && self.intro_visible
+            && !self.intro_focus.contains_focused(window, cx)
+        {
             self.controls["intro-start"].focus(window);
         }
         div()
@@ -2217,6 +2312,10 @@ impl Render for Gallery {
             .text_color(rgb(TEXT))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
+            .on_action(cx.listener(|app, _: &crate::CheckForUpdates, window, cx| {
+                app.updates_open(window, cx);
+                app.updates_check(cx);
+            }))
             .flex()
             .flex_col()
             .child(
@@ -2360,9 +2459,15 @@ impl Render for Gallery {
                     .h(px(72.))
                     .child(self.header(cx)),
             )
-            .when(self.intro_visible, |d| d.child(self.intro(window, cx)))
-            .when(self.rotation.draft.is_some(), |d| {
-                d.child(self.rotation_panel(window, cx))
+            .when(self.intro_visible && !self.updates.visible, |d| {
+                d.child(self.intro(window, cx))
+            })
+            .when(
+                self.rotation.draft.is_some() && !self.updates.visible,
+                |d| d.child(self.rotation_panel(window, cx)),
+            )
+            .when(self.updates.visible, |d| {
+                d.child(self.updates_panel(window, cx))
             })
             .child(
                 gpui::canvas(
@@ -2384,6 +2489,8 @@ impl Render for Gallery {
                                         | "show-new"
                                         | "preferences-error"
                                 ) || node.id.starts_with("catalogue-")
+                                    || node.id.starts_with("updates-")
+                                    || node.id == "updates"
                                     || node.id.starts_with("intro-")
                                     || (node.id.starts_with("rotation-")
                                         && node.id != "rotation-add")
@@ -2435,7 +2542,9 @@ impl Render for Gallery {
                                     node.focused = handle.is_focused(window);
                                 }
                             }
-                            if rotation_visible {
+                            if updates_visible {
+                                snapshot.retain(|node| node.id.starts_with("updates-"));
+                            } else if rotation_visible {
                                 snapshot.retain(|node| {
                                     node.id.starts_with("rotation-") && node.id != "rotation-add"
                                 });
@@ -2443,7 +2552,8 @@ impl Render for Gallery {
                                 snapshot.retain(|node| node.id.starts_with("intro-"));
                             } else {
                                 snapshot.retain(|node| {
-                                    !node.id.starts_with("intro-")
+                                    !node.id.starts_with("updates-")
+                                        && !node.id.starts_with("intro-")
                                         && (!node.id.starts_with("rotation-")
                                             || node.id == "rotation-add")
                                 });
@@ -2517,6 +2627,10 @@ fn control_tab_index(id: &str) -> isize {
         "clear-search" => 3,
         "refresh" => 4,
         "rotation" => 5,
+        "updates" => 6,
+        "updates-check" => 0,
+        "updates-install" => 1,
+        "updates-close" => 2,
         "show-new" => 10,
         "retry-catalogue" => 11,
         "back-to-results" => 20,
@@ -2528,6 +2642,224 @@ fn control_tab_index(id: &str) -> isize {
         "empty-clear-search" => 31,
         "load-more" => 40,
         _ => 50,
+    }
+}
+
+impl Gallery {
+    fn updates_poll(&mut self, cx: &mut Context<Self>) {
+        self.updates_check(cx);
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(pinacora::updater::CHECK_INTERVAL)
+                    .await;
+                if this.update(cx, |app, cx| app.updates_check(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    fn updates_check(&mut self, cx: &mut Context<Self>) {
+        if !self.updates.begin_check() {
+            return;
+        }
+        let task = cx
+            .background_executor()
+            .spawn(async { pinacora::updater::check().map_err(|error| error.to_string()) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |app, cx| {
+                app.updates.checked(result);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn updates_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.applying {
+            return;
+        }
+        self.updates.visible = true;
+        self.updates_focus_step(false, window, cx);
+        cx.notify();
+    }
+    fn updates_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.updates.installing {
+            return;
+        }
+        self.updates.visible = false;
+        if self.rotation.draft.is_some() {
+            self.controls["rotation-close"].focus(window);
+        } else if self.intro_visible {
+            self.controls["intro-start"].focus(window);
+        } else {
+            self.controls["updates"].focus(window);
+        }
+        cx.notify();
+    }
+    fn updates_focus_step(&mut self, reverse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let mut ids = vec![];
+        if !self.updates.checking && !self.updates.installing {
+            ids.push("updates-check");
+        }
+        if self.updates.release.is_some() && !self.updates.checking && !self.updates.installing {
+            ids.push("updates-install");
+        }
+        if !self.updates.installing {
+            ids.push("updates-close");
+        }
+        if ids.is_empty() {
+            self.updates_focus.focus(window);
+            return;
+        }
+        let current = ids
+            .iter()
+            .position(|id| self.controls[*id].is_focused(window));
+        let next = match current {
+            Some(index) if reverse => (index + ids.len() - 1) % ids.len(),
+            Some(index) => (index + 1) % ids.len(),
+            None => 0,
+        };
+        self.controls[ids[next]].focus(window);
+        cx.notify();
+    }
+    fn updates_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event.keystroke.key.as_str() {
+            "tab" => {
+                cx.stop_propagation();
+                self.updates_focus_step(event.keystroke.modifiers.shift, window, cx);
+            }
+            "escape" => {
+                cx.stop_propagation();
+                self.updates_close(window, cx);
+            }
+            _ => {}
+        }
+    }
+    fn updates_install(&mut self, cx: &mut Context<Self>) {
+        if self.updates.installing || self.updates.checking {
+            return;
+        }
+        let Some(release) = self.updates.release.clone() else {
+            return;
+        };
+        self.updates.installing = true;
+        self.updates.error = None;
+        let task = cx.background_executor().spawn(async move {
+            pinacora::updater::stage_update(&release)
+                .and_then(|pending| pending.launch())
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |app, cx| {
+                app.updates.installing = false;
+                match result {
+                    Ok(()) => cx.quit(),
+                    Err(error) => {
+                        app.updates.error = Some(error);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn updates_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let busy = self.updates.checking || self.updates.installing;
+        let status = if self.updates.installing {
+            "Downloading and preparing the update… Pinacora will restart when ready.".into()
+        } else if self.updates.checking {
+            "Checking for updates…".into()
+        } else if let Some(release) = &self.updates.release {
+            format!("Pinacora {} is available.", release.version)
+        } else if self.updates.error.is_some() {
+            "Could not check for updates. Try again.".into()
+        } else if self.updates.checked {
+            "You're up to date. No newer stable release is available.".into()
+        } else {
+            "Check for the latest stable release.".into()
+        };
+        div()
+            .id("updates-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(rgba(0x000000bb))
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_6()
+            .track_focus(&self.updates_focus)
+            .on_key_down(cx.listener(Self::updates_key))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("updates-panel")
+                    .overflow_y_scroll()
+                    .w(px(480.))
+                    .max_w_full()
+                    .max_h(px(f32::from(window.viewport_size().height) - 48.))
+                    .bg(rgb(SURFACE))
+                    .rounded(px(16.))
+                    .border_1()
+                    .border_color(rgb(RAISED))
+                    .p_6()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .relative()
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Pinacora updates")
+                            .child(self.semantic("updates-title".into(), "Pinacora updates".into(), AccessibilityRole::StaticText, String::new(), true, false, false)),
+                    )
+                    .child(div().text_color(rgb(MUTED)).child(self.text(
+                        "updates-current",
+                        format!("Current version: {}", env!("CARGO_PKG_VERSION")),
+                    )))
+                    .child(self.text("updates-status", status))
+                    .when(self.rotation_dirty(), |d| {
+                        d.child(div().text_color(rgb(MUTED)).child(self.text(
+                            "updates-unsaved-rotation",
+                            "Restarting discards unsaved rotation settings. Save or cancel those changes first.",
+                        )))
+                    })
+                    .when_some(self.updates.error.as_ref(), |d, error| {
+                        d.child(
+                            div()
+                                .text_color(rgb(0xf0b2ac))
+                                .child(self.text("updates-error", error.clone())),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(self.button("updates-check", "Check for updates", !busy, cx))
+                            .when(self.updates.release.is_some(), |d| {
+                                d.child(self.button(
+                                    "updates-install",
+                                    "Update and restart",
+                                    !busy,
+                                    cx,
+                                ))
+                            })
+                            .child(div().flex_1())
+                            .child(self.button(
+                                "updates-close",
+                                "Close",
+                                !self.updates.installing,
+                                cx,
+                            )),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
@@ -3506,6 +3838,32 @@ impl Gallery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_recheck_failure_keeps_offer_and_busy_work_cannot_overlap() {
+        let release = serde_json::from_value(serde_json::json!({
+            "version": "9.0.0",
+            "html_url": "https://github.com/gitfudge0/pinacora/releases/tag/v9.0.0",
+            "asset": {"name": "fixture.zip", "browser_download_url": "https://github.com/gitfudge0/pinacora/releases/download/v9.0.0/fixture.zip", "size": 1},
+            "checksum": null
+        })).unwrap();
+        let mut updates = Updates::default();
+        assert!(updates.begin_check());
+        assert!(!updates.begin_check());
+        updates.checked(Ok(Some(release)));
+        assert_eq!(updates.release.as_ref().unwrap().version, "9.0.0");
+        assert!(updates.begin_check());
+        updates.checked(Err("offline".into()));
+        assert_eq!(updates.release.as_ref().unwrap().version, "9.0.0");
+        assert_eq!(updates.error.as_deref(), Some("offline"));
+        updates.installing = true;
+        assert!(!updates.begin_check());
+        updates.installing = false;
+        assert!(updates.begin_check());
+        updates.checked(Ok(None));
+        assert!(updates.release.is_none());
+        assert!(updates.error.is_none());
+        assert!(updates.checked);
+    }
     fn art() -> Artwork {
         Artwork {
             id: "one".into(),

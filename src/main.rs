@@ -6,8 +6,19 @@ use gpui::{
     App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SharedString,
     TitlebarOptions, WindowBounds, WindowOptions, actions, point, px, size,
 };
-actions!(pinacora, [Quit]);
+actions!(pinacora, [Quit, CheckForUpdates]);
 fn main() {
+    if let Some(result) = pinacora::updater::run_update_helper_if_requested() {
+        if let Err(error) = result {
+            eprintln!("Update failed: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("Pinacora {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     for arg in std::env::args().skip(1) {
         let result = match arg.as_str() {
             "--rotation-service" => Some(pinacora::rotation_service::run()),
@@ -48,7 +59,10 @@ fn main() {
         )]);
         cx.set_menus(vec![Menu {
             name: "Pinacora".into(),
-            items: vec![MenuItem::action("Quit Pinacora", Quit)],
+            items: vec![
+                MenuItem::action("Check for updates…", CheckForUpdates),
+                MenuItem::action("Quit Pinacora", Quit),
+            ],
         }]);
         let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
         cx.open_window(

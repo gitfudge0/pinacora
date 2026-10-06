@@ -68,7 +68,7 @@ The software and original project assets use the [MIT license](LICENSE). This li
 
 [Privacy](PRIVACY.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
-Developer docs: [Code map](AGENTS.md) · [Troubleshooting](docs/troubleshooting.md) · [Rotation](docs/rotation.md)
+Developer docs: [Code map](AGENTS.md) · [Troubleshooting](docs/troubleshooting.md) · [Rotation](docs/rotation.md) · [Updates](docs/updates.md)
 
 ## Remove background rotation
 

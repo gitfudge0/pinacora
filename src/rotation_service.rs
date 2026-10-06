@@ -212,7 +212,7 @@ fn prepare_original(
                 return Ok((path, skipped));
             }
             Err(e) if queue.source == Source::EntireGallery && permanent_original_error(&e) => {
-                skipped.push((art, format!("{e:#}")));
+                skipped.push((art, e.to_string()));
                 queue.advance();
             }
             Err(e) => return Err(e),
@@ -838,7 +838,7 @@ impl Engine {
                         self.snapshot.state = State::Failed;
                         self.snapshot.pending = true;
                         self.snapshot.error = Some(format!(
-                            "Preparation failed: {e:#}. Saved configuration and wallpaper were kept."
+                            "Preparation failed: {e}. Saved configuration and wallpaper were kept."
                         ));
                         self.snapshot.wants_running = false;
                     }
@@ -862,12 +862,12 @@ impl Engine {
                     }
                     Err(e) => {
                         self.attempts += 1;
-                        self.snapshot.error = Some(format!("Next original unavailable: {e:#}"));
+                        self.snapshot.error = Some(format!("Next original unavailable: {e}."));
                         if self.snapshot.prefs.source == Source::EntireGallery
                             && permanent_original_error(&e)
                         {
                             if let Some(art) = self.snapshot.next.take() {
-                                self.snapshot.skipped.push((art, format!("{e:#}")));
+                                self.snapshot.skipped.push((art, e.to_string()));
                             }
                             self.queue.as_mut().unwrap().advance();
                             self.attempts = 0;
@@ -887,7 +887,7 @@ impl Engine {
                             self.snapshot.wants_running = false;
                             self.snapshot.deadline = None;
                             self.snapshot.error = Some(format!(
-                                "Next original unavailable after three attempts: {e:#}. Retry when connected."
+                                "Next original unavailable after three attempts: {e}."
                             ));
                         } else {
                             self.retry_at =
@@ -1218,6 +1218,55 @@ mod tests {
             engine.snapshot.prepared_path.unwrap(),
             dir.path().join("originals/mock.jpg")
         );
+    }
+    #[test]
+    fn download_failure_is_concise_and_retry_keeps_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        let mut engine = load(dir.path(), mock());
+        ready(&mut engine, dir.path(), now);
+        engine.snapshot.prepared_path = None;
+        for _ in 0..3 {
+            let error = anyhow::anyhow!(
+                "https://cdn.reframed.gallery/originals/long-name.jpg: DNS lookup detail"
+            )
+            .context("Could not resolve the image server. Check your connection and retry");
+            engine
+                .completed(Event::Downloaded(engine.epoch, "a".into(), Err(error)), now)
+                .unwrap();
+        }
+        assert_eq!(engine.snapshot.state, State::Failed);
+        assert!(!engine.snapshot.wants_running);
+        assert_eq!(
+            engine.snapshot.error.as_deref(),
+            Some(
+                "Next original unavailable after three attempts: Could not resolve the image server. Check your connection and retry."
+            )
+        );
+        assert_eq!(engine.snapshot.next.as_ref().unwrap().id, "a");
+        assert!(engine.snapshot.skipped.is_empty());
+        drop(engine);
+        let mut restored = load(dir.path(), mock());
+        restored.command(Command::Retry, now).unwrap();
+        assert!(restored.snapshot.wants_running);
+        assert!(restored.snapshot.error.is_none());
+        assert_eq!(restored.snapshot.next.as_ref().unwrap().id, "a");
+        assert_eq!(restored.attempts, 0);
+        assert!(restored.retry_at.is_none());
+        restored
+            .completed(
+                Event::Downloaded(
+                    restored.epoch,
+                    "a".into(),
+                    Ok(dir.path().join("originals/mock.jpg")),
+                ),
+                now,
+            )
+            .unwrap();
+        restored.apply_due(now).unwrap();
+        assert_eq!(restored.snapshot.current.as_ref().unwrap().id, "a");
+        assert_eq!(restored.queue.as_ref().unwrap().next().unwrap().id, "b");
+        assert!(restored.snapshot.error.is_none());
     }
     #[test]
     fn apply_failure_persists_paused_same_candidate_retry() {

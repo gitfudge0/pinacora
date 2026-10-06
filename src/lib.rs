@@ -7,3 +7,5 @@ pub mod storage;
 
 pub mod rotation_service;
 pub mod rotation_service_manager;
+
+pub mod updater;

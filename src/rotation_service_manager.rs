@@ -50,6 +50,121 @@ pub fn ensure_running() -> Result<()> {
     )
 }
 
+fn update_worker_loaded(present: bool, probe: impl FnOnce() -> Result<bool>) -> Result<bool> {
+    if !present {
+        return Ok(false);
+    }
+    probe()
+}
+#[cfg(target_os = "macos")]
+fn update_launch_job() -> Result<String> {
+    let uid = run("id", &[OsStr::new("-u")])?;
+    anyhow::ensure!(uid.status.success(), "Could not determine launchd user");
+    let uid = std::str::from_utf8(&uid.stdout)?.trim();
+    anyhow::ensure!(
+        !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()),
+        "Invalid launchd user"
+    );
+    Ok(format!("gui/{uid}/{LAUNCH_LABEL}"))
+}
+/// Whether the current installed executable has a loaded worker registration.
+/// Checking for updates never creates a registration or changes preferences.
+pub fn registered_for_update() -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = home()?.join("Library/LaunchAgents/com.pinacora.rotation.plist");
+        if !update_worker_loaded(path.exists(), || {
+            Ok(run(
+                "launchctl",
+                &[OsStr::new("print"), OsStr::new(&update_launch_job()?)],
+            )?
+            .status
+            .success())
+        })? {
+            return Ok(false);
+        }
+        let value = plist::Value::from_file(path)?;
+        let executable = std::env::current_exe()?;
+        let registered = value
+            .as_dictionary()
+            .and_then(|d| d.get("ProgramArguments"))
+            .and_then(plist::Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(plist::Value::as_string);
+        anyhow::ensure!(
+            registered == executable.to_str(),
+            "Rotation is registered for a different installation; update that app manually"
+        );
+        Ok(true)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or(home()?.join(".config"));
+        let path = config.join("systemd/user").join(SERVICE_NAME);
+        if !update_worker_loaded(path.exists(), || {
+            Ok(run(
+                "systemctl",
+                &[
+                    OsStr::new("--user"),
+                    OsStr::new("is-active"),
+                    OsStr::new("--quiet"),
+                    OsStr::new(SERVICE_NAME),
+                ],
+            )?
+            .status
+            .success())
+        })? {
+            return Ok(false);
+        }
+        let unit = fs::read_to_string(path)?;
+        let expected = format!(
+            "ExecStart={} --rotation-service",
+            systemd_quote(path_text(&std::env::current_exe()?)?, true)?
+        );
+        anyhow::ensure!(
+            unit.lines().any(|line| line == expected),
+            "Rotation is registered for a different installation; update that app manually"
+        );
+        Ok(true)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    Ok(false)
+}
+
+/// Refresh the already registered worker after executable replacement. This does
+/// not enable rotation or create an absent service and leaves saved state intact.
+pub fn restart_after_update(registered: bool) -> Result<()> {
+    if !registered {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    checked(
+        "systemctl",
+        &[
+            OsStr::new("--user"),
+            OsStr::new("try-restart"),
+            OsStr::new(SERVICE_NAME),
+        ],
+    )?;
+    #[cfg(target_os = "macos")]
+    {
+        let job = update_launch_job()?;
+        if run("launchctl", &[OsStr::new("print"), OsStr::new(&job)])?
+            .status
+            .success()
+        {
+            checked(
+                "launchctl",
+                &[OsStr::new("kickstart"), OsStr::new("-k"), OsStr::new(&job)],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn wait_until_ready(
     mut probe: impl FnMut() -> Result<()>,
     timeout: std::time::Duration,
@@ -407,6 +522,15 @@ fn macos_plist(executable: &Path) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn updates_refresh_only_present_and_loaded_workers() {
+        assert!(
+            !update_worker_loaded(false, || panic!("absent worker must not be probed")).unwrap()
+        );
+        assert!(!update_worker_loaded(true, || Ok(false)).unwrap());
+        assert!(update_worker_loaded(true, || Ok(true)).unwrap());
+        restart_after_update(false).unwrap();
+    }
     #[test]
     fn linux_unit_preserves_argument_boundaries_and_session_lifecycle() {
         let unit = linux_unit(

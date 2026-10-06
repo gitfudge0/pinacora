@@ -45,7 +45,10 @@ pub fn fetch(url: &str, original: bool) -> Result<(PathBuf, u32, u32)> {
         .set("User-Agent", "Mozilla/5.0")
         .set("Referer", "https://www.reframed.gallery/")
         .call()
-        .context("Image download failed; the source may be temporarily blocking access")?;
+        .map_err(|error| {
+            let message = request_error_message(&error);
+            anyhow::Error::new(error).context(message)
+        })?;
     let limit = if original {
         100 * 1024 * 1024
     } else {
@@ -88,6 +91,30 @@ pub fn fetch(url: &str, original: bool) -> Result<(PathBuf, u32, u32)> {
     }
     result
 }
+fn request_error_message(error: &ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(403, _) => "The image server denied access. Try again later".into(),
+        ureq::Error::Status(429, _) => {
+            "The image server is limiting requests. Try again later".into()
+        }
+        ureq::Error::Status(404 | 410, _) => "The original image is no longer available".into(),
+        ureq::Error::Status(status, _) => {
+            format!("The image server returned HTTP {status}. Try again later")
+        }
+        ureq::Error::Transport(error) => transport_error_message(error.kind()).into(),
+    }
+}
+fn transport_error_message(kind: ureq::ErrorKind) -> &'static str {
+    match kind {
+        ureq::ErrorKind::Dns => {
+            "Could not resolve the image server. Check your connection and retry"
+        }
+        ureq::ErrorKind::ConnectionFailed | ureq::ErrorKind::Io => {
+            "Could not connect to the image server. Check your connection and retry"
+        }
+        _ => "Image download failed. Try again later",
+    }
+}
 fn dimensions(path: &Path) -> Result<(u32, u32, &'static str)> {
     let reader = image::ImageReader::open(path)?.with_guessed_format()?;
     let extension = match reader.format() {
@@ -125,6 +152,23 @@ mod tests {
         ] {
             assert!(validate_url(u).is_err(), "{u}");
         }
+    }
+    #[test]
+    fn network_failures_do_not_claim_access_was_blocked() {
+        assert_eq!(
+            transport_error_message(ureq::ErrorKind::Dns),
+            "Could not resolve the image server. Check your connection and retry"
+        );
+        let error = ureq::Error::Status(403, ureq::Response::new(403, "Forbidden", "").unwrap());
+        assert_eq!(
+            request_error_message(&error),
+            "The image server denied access. Try again later"
+        );
+        let error = ureq::Error::Status(404, ureq::Response::new(404, "Not Found", "").unwrap());
+        assert_eq!(
+            request_error_message(&error),
+            "The original image is no longer available"
+        );
     }
     #[test]
     fn html_is_not_accepted_as_wallpaper() {
